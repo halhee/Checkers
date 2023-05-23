@@ -10,16 +10,23 @@ from io import BytesIO
 
 
 def load_element_types(filepath):
+    _, ext = os.path.splitext(filepath)
+    supported_formats = ['.xlsx', '.xlsm', '.xltx', '.xltm']
+    
+    if ext.lower() not in supported_formats:
+        raise ValueError(f"Unsupported file format '{ext}'. Supported formats are: {', '.join(supported_formats)}")
+    
     element_types_df = pd.read_excel(filepath, sheet_name='Element_Types', header=None)
     return element_types_df[0].tolist()
 
-ifc_directory = "/Users/bouznira/Desktop/code/python/BIMBot/IFCAnalyser"
-ppt_directory = "/Users/bouznira/Desktop/code/python/BIMBot/IFCAnalyser/PPT"
-
-element_types_file = os.path.join(ppt_directory, 'parametres_requis.xlsx')
-element_types = load_element_types(element_types_file)
 
 def load_required_psets_and_params(filepath):
+    _, ext = os.path.splitext(filepath)
+    supported_formats = ['.xlsx', '.xlsm', '.xltx', '.xltm']
+    
+    if ext.lower() not in supported_formats:
+        raise ValueError(f"Unsupported file format '{ext}'. Supported formats are: {', '.join(supported_formats)}")
+
     df = pd.read_excel(filepath, sheet_name=None)
     required_psets_and_params = {}
     
@@ -38,6 +45,7 @@ def load_required_psets_and_params(filepath):
 
     return required_psets_and_params
 
+
 def gray_empty_cells(excel_filename):
     wb = load_workbook(excel_filename)
     gray_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
@@ -51,6 +59,12 @@ def gray_empty_cells(excel_filename):
 
     wb.save(excel_filename)
 
+
+ifc_directory = "/Users/bouznira/Desktop/code/python/BIMBot/IFCAnalyser"
+ppt_directory = "/Users/bouznira/Desktop/code/python/BIMBot/IFCAnalyser/PPT"
+
+element_types_file = os.path.join(ppt_directory, 'parametres_requis.xlsx')
+element_types = load_element_types(element_types_file)
 
 required_psets_and_params = load_required_psets_and_params(os.path.join(ppt_directory, 'parametres_requis.xlsx'))
 
@@ -107,3 +121,4 @@ for filename in os.listdir(ifc_directory):
                     df.to_excel(writer, sheet_name=sheet_name, index=False)
 
         gray_empty_cells(excel_filename)
+
