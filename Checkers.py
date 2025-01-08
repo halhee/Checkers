@@ -611,4 +611,6 @@ def download(analysis_id):
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Configuration du port via variable d'environnement pour Vercel
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
