@@ -6,9 +6,8 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./uploads:/app/uploads
-      - ./temp:/app/temp
+      - .:/app
     environment:
       - FLASK_ENV=production
       - FLASK_APP=Checkers.py
-    command: gunicorn --bind 0.0.0.0:8080 Checkers:app
+    command: gunicorn --bind 0.0.0.0:8080 --log-level debug Checkers:app

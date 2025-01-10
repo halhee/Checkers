@@ -137,20 +137,20 @@
         <div id="dashboard" class="results">
             <div class="stats-container">
                 <div class="stat-box">
-                    <div class="stat-value" id="totalElements">0</div>
-                    <div class="stat-label">Total d'éléments</div>
+                    <div class="stat-value" id="totalElements">-</div>
+                    <div class="stat-label">Éléments totaux</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-value" id="validElements">0</div>
+                    <div class="stat-value" id="validElements">-</div>
                     <div class="stat-label">Éléments valides</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-value" id="missingPsets">0</div>
-                    <div class="stat-label">PSet manquants</div>
+                    <div class="stat-value" id="missingElements">-</div>
+                    <div class="stat-label">Éléments invalides</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-value" id="missingParams">0</div>
-                    <div class="stat-label">Paramètres manquants</div>
+                    <div class="stat-value" id="totalCarbonFootprint">-</div>
+                    <div class="stat-label">Empreinte carbone totale (kg CO2e)</div>
                 </div>
             </div>
 
@@ -161,6 +161,12 @@
                 <div class="chart-box">
                     <canvas id="floorChart"></canvas>
                 </div>
+                <div class="chart-box">
+                    <canvas id="carbonByTypeChart"></canvas>
+                </div>
+                <div class="chart-box">
+                    <canvas id="carbonByFloorChart"></canvas>
+                </div>
             </div>
         </div>
     </div>
@@ -169,6 +175,8 @@
         let currentAnalysisId = null;
         let statusChart = null;
         let floorChart = null;
+        let carbonByTypeChart = null;
+        let carbonByFloorChart = null;
 
         document.getElementById('uploadForm').addEventListener('submit', function(e) {
             e.preventDefault();
@@ -203,19 +211,7 @@
                 currentAnalysisId = data.analysis_id;
                 
                 // Update statistics
-                document.getElementById('totalElements').textContent = data.total_elements;
-                document.getElementById('validElements').textContent = data.valid_elements;
-                document.getElementById('missingPsets').textContent = data.missing_psets;
-                document.getElementById('missingParams').textContent = data.missing_params;
-                
-                // Update charts
-                if (data.floors && Array.isArray(data.floors)) {
-                    updateStatusChart(data);
-                    updateFloorChart(data.floors);
-                } else {
-                    console.error('Invalid floors data:', data.floors);
-                    alert('Erreur lors de la mise à jour des graphiques');
-                }
+                updateCharts(data);
             })
             .catch(error => {
                 loading.style.display = 'none';
@@ -223,6 +219,22 @@
                 console.error('Error:', error);
             });
         });
+
+        function updateCharts(data) {
+            // Mise à jour des statistiques
+            document.getElementById('totalElements').textContent = data.total_elements;
+            document.getElementById('validElements').textContent = data.valid_elements;
+            document.getElementById('missingElements').textContent = data.missing_elements;
+            document.getElementById('totalCarbonFootprint').textContent = Math.round(data.carbon_footprint.total).toLocaleString();
+
+            // Mise à jour des graphiques existants
+            updateStatusChart(data);
+            updateFloorChart(data.floors);
+
+            // Mise à jour des nouveaux graphiques d'empreinte carbone
+            updateCarbonByTypeChart(data.carbon_footprint.by_type);
+            updateCarbonByFloorChart(data.carbon_footprint.by_floor);
+        }
 
         function updateStatusChart(data) {
             const ctx = document.getElementById('statusChart').getContext('2d');
@@ -235,11 +247,6 @@
             const valid = data.valid_elements;
             const missingPsets = data.missing_psets;
             const missingParams = data.missing_params;
-            
-            document.getElementById('totalElements').textContent = total;
-            document.getElementById('validElements').textContent = valid;
-            document.getElementById('missingPsets').textContent = missingPsets;
-            document.getElementById('missingParams').textContent = missingParams;
             
             statusChart = new Chart(ctx, {
                 type: 'doughnut',
@@ -392,6 +399,100 @@
                                         `Taux de validité: ${validPercent}%`
                                     ];
                                 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateCarbonByTypeChart(carbonData) {
+            const ctx = document.getElementById('carbonByTypeChart').getContext('2d');
+            const labels = Object.keys(carbonData);
+            const values = Object.values(carbonData);
+
+            if (carbonByTypeChart) {
+                carbonByTypeChart.destroy();
+            }
+
+            carbonByTypeChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Empreinte carbone par type (kg CO2e)',
+                        data: values,
+                        backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateCarbonByFloorChart(carbonData) {
+            const ctx = document.getElementById('carbonByFloorChart').getContext('2d');
+            const labels = Object.keys(carbonData);
+            const values = Object.values(carbonData);
+
+            if (carbonByFloorChart) {
+                carbonByFloorChart.destroy();
+            }
+
+            carbonByFloorChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Empreinte carbone par étage (kg CO2e)',
+                        data: values,
+                        backgroundColor: 'rgba(153, 102, 255, 0.6)',
+                        borderColor: 'rgba(153, 102, 255, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#FFFFFF'
                             }
                         }
                     }

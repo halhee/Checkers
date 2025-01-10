@@ -3,20 +3,23 @@ import os
 import tempfile
 import ifcopenshell
 import ifcopenshell.util.element
-import pandas as pd
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from werkzeug.utils import secure_filename
 import uuid
+import time
+import pandas as pd
+import numpy as np
 from collections import defaultdict
+from openpyxl import Workbook
+from openpyxl.chart import BarChart, PieChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 import concurrent.futures
 from typing import Dict, List, Set, Tuple
-import time
 import shutil
 import re
 from datetime import datetime
 import threading
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
@@ -306,6 +309,356 @@ def create_summary_sheet(workbook, total_elements, valid_elements, missing_eleme
     # Activer l'onglet de résumé
     workbook.active = workbook.worksheets.index(summary)
 
+# Mapping des éléments IFC vers les matériaux
+IFC_TO_MATERIAL_MAPPING = {
+    'IfcWall': 'Béton',
+    'IfcWallStandardCase': 'Béton',
+    'IfcSlab': 'Béton',
+    'IfcFooting': 'Béton',
+    'IfcBeam': 'Béton',
+    'IfcColumn': 'Béton',
+    'IfcStair': 'Béton',
+    'IfcRailing': 'Acier',
+    'IfcWindow': 'Verre',
+    'IfcDoor': 'Bois',
+    'IfcRoof': 'Béton',
+    'IfcCovering': 'Isolation'
+}
+
+# Facteurs d'émission de CO2 par matériau
+MATERIAL_CARBON_FACTORS = {
+    'Béton': {
+        'factor': 320,  # kg CO2e/m³
+        'description': 'Béton armé standard',
+        'source': 'Base INIES',
+        'details': 'Inclut la production du ciment, des agrégats, le transport et la mise en œuvre'
+    },
+    'Acier': {
+        'factor': 12000,  # kg CO2e/m³
+        'description': 'Acier de construction',
+        'source': 'Base INIES',
+        'details': 'Inclut la production primaire, le laminage et le transport'
+    },
+    'Verre': {
+        'factor': 2500,  # kg CO2e/m³
+        'description': 'Double vitrage standard',
+        'source': 'Base INIES',
+        'details': 'Inclut la production du verre, l\'assemblage et le transport'
+    },
+    'Bois': {
+        'factor': -750,  # kg CO2e/m³ (négatif car stockage de carbone)
+        'description': 'Bois de construction',
+        'source': 'Base INIES',
+        'details': 'Bois local, inclut l\'exploitation forestière, le transport et la transformation'
+    },
+    'Isolation': {
+        'factor': 100,  # kg CO2e/m³
+        'description': 'Isolation thermique standard',
+        'source': 'Base INIES',
+        'details': 'Laine minérale, inclut la production, le transport et la mise en œuvre'
+    }
+}
+
+def calculate_carbon_footprint(ifc_file, element):
+    """Calcule l'empreinte carbone d'un élément IFC."""
+    try:
+        # Obtenir le type de matériau
+        material = IFC_TO_MATERIAL_MAPPING.get(element.is_a(), 'Non spécifié')
+        if material == 'Non spécifié':
+            return 0
+        
+        # Obtenir le facteur d'émission
+        material_data = MATERIAL_CARBON_FACTORS.get(material)
+        if not material_data:
+            return 0
+        
+        emission_factor = material_data['factor']
+        
+        # Calculer le volume ou la surface
+        quantity = 0
+        
+        # Essayer d'abord d'obtenir les quantités via les propriétés
+        if hasattr(element, 'IsDefinedBy'):
+            for rel in element.IsDefinedBy:
+                if rel.is_a('IfcRelDefinesByProperties'):
+                    if rel.RelatingPropertyDefinition.is_a('IfcElementQuantity'):
+                        for q in rel.RelatingPropertyDefinition.Quantities:
+                            if q.is_a('IfcQuantityVolume'):
+                                quantity = float(q.VolumeValue)
+                                print(f"Volume found in properties for {element.is_a()}: {quantity:.2f} m³")
+                                break
+                            elif q.is_a('IfcQuantityArea'):
+                                quantity = float(q.AreaValue)
+                                print(f"Area found in properties for {element.is_a()}: {quantity:.2f} m²")
+                                break
+        
+        # Si aucune quantité n'est trouvée, essayer de calculer à partir de la géométrie
+        if quantity == 0:
+            if hasattr(element, 'Representation'):
+                try:
+                    settings = ifcopenshell.geom.settings()
+                    settings.set(settings.USE_PYTHON_OPENCASCADE, True)
+                    shape = ifcopenshell.geom.create_shape(settings, element)
+                    
+                    if material in ['Verre', 'Isolation']:  # Pour les matériaux en surface
+                        quantity = shape.surface_area
+                        print(f"Surface area calculated for {element.is_a()}: {quantity:.2f} m²")
+                        emission_factor = emission_factor / 10  # Convertir le facteur pour la surface
+                    else:  # Pour les matériaux volumiques
+                        quantity = shape.volume
+                        print(f"Volume calculated for {element.is_a()}: {quantity:.2f} m³")
+                except:
+                    # Si le calcul géométrique échoue, estimer à partir des dimensions
+                    if hasattr(element, 'OverallHeight') and hasattr(element, 'OverallWidth'):
+                        if material in ['Verre', 'Isolation']:
+                            quantity = float(element.OverallHeight) * float(element.OverallWidth)
+                        else:
+                            depth = 0.3  # Profondeur par défaut en mètres
+                            if hasattr(element, 'OverallDepth'):
+                                depth = float(element.OverallDepth)
+                            quantity = float(element.OverallHeight) * float(element.OverallWidth) * depth
+                        print(f"Quantity estimated from dimensions for {element.is_a()}: {quantity:.2f}")
+                    else:
+                        # Valeur par défaut si aucune autre méthode ne fonctionne
+                        quantity = 1.0
+                        print(f"Using default quantity for {element.is_a()}: {quantity:.2f}")
+        
+        # Calculer l'empreinte carbone
+        carbon_footprint = quantity * emission_factor
+        print(f"Carbon footprint for {element.is_a()}: {carbon_footprint:.2f} kg CO2e (Quantity: {quantity:.2f}, Factor: {emission_factor})")
+        
+        return carbon_footprint
+    except Exception as e:
+        print(f"Error calculating carbon footprint for {element.is_a()}: {str(e)}")
+        return 0
+
+def create_carbon_footprint_sheet(workbook, carbon_data):
+    """Crée un onglet pour l'empreinte carbone dans le rapport Excel."""
+    carbon_sheet = workbook.create_sheet("Empreinte_Carbone")
+    
+    # Styles
+    header_font = Font(bold=True, size=14, color="FFFFFF")
+    subheader_font = Font(bold=True, size=12)
+    normal_font = Font(size=11)
+    
+    header_fill = PatternFill(start_color="2F75B5", end_color="2F75B5", fill_type="solid")
+    subheader_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    total_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # Section 1: Bilan carbone du projet
+    carbon_sheet.merge_cells('A1:F1')
+    cell = carbon_sheet.cell(row=1, column=1)
+    cell.value = "BILAN CARBONE DU PROJET"
+    cell.font = header_font
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.fill = header_fill
+    
+    # En-têtes du bilan
+    headers = [
+        "Type d'élément",
+        "Matériau",
+        "Volume/Surface (m³ ou m²)",
+        "Facteur d'émission (kg CO2e/m³ ou kg CO2e/m²)",
+        "Empreinte carbone (kg CO2e)",
+        "% du total"
+    ]
+    
+    # Ajuster la hauteur de la première ligne
+    carbon_sheet.row_dimensions[1].height = 30
+    
+    for col, header in enumerate(headers, 1):
+        cell = carbon_sheet.cell(row=2, column=col)
+        cell.value = header
+        cell.font = subheader_font
+        cell.fill = subheader_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        # Ajuster la largeur des colonnes
+        carbon_sheet.column_dimensions[get_column_letter(col)].width = 25
+    
+    # Ajuster la hauteur de la ligne d'en-tête
+    carbon_sheet.row_dimensions[2].height = 45
+    
+    # Données du bilan
+    row = 3
+    row_start = row
+    total_carbon = carbon_data['total']
+    
+    # Trier les éléments par empreinte carbone décroissante
+    sorted_elements = sorted(
+        carbon_data['by_type'].items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+    
+    for element_type, carbon_value in sorted_elements:
+        material = carbon_data['material_mapping'].get(element_type, "Non spécifié")
+        material_data = carbon_data['material_factors'].get(material, {'factor': 0})
+        
+        # Calculer le volume/surface total pour ce type d'élément
+        quantity = carbon_value / material_data['factor'] if material_data['factor'] != 0 else 0
+        percentage = (carbon_value/total_carbon*100) if total_carbon != 0 else 0
+        
+        cells = [
+            (element_type, "left"),
+            (material, "left"),
+            (f"{quantity:.2f}", "right"),
+            (f"{material_data['factor']}", "right"),
+            (f"{carbon_value:.2f}", "right"),
+            (f"{percentage:.1f}%", "right")
+        ]
+        
+        for col, (value, align) in enumerate(cells, 1):
+            cell = carbon_sheet.cell(row=row, column=col)
+            cell.value = value
+            cell.border = thin_border
+            cell.font = normal_font
+            cell.alignment = Alignment(horizontal=align, vertical="center")
+        row += 1
+    
+    # Total
+    row_end = row
+    carbon_sheet.merge_cells(f'A{row}:C{row}')
+    cell = carbon_sheet.cell(row=row, column=1)
+    cell.value = "TOTAL"
+    cell.font = Font(bold=True, size=12)
+    cell.alignment = Alignment(horizontal="right", vertical="center")
+    cell.fill = total_fill
+    
+    # Cellules du total
+    for col in range(1, 7):
+        cell = carbon_sheet.cell(row=row, column=col)
+        cell.border = thin_border
+        cell.fill = total_fill
+        if col == 5:
+            cell.value = f"{total_carbon:.2f}"
+        elif col == 6:
+            cell.value = "100%"
+        cell.font = Font(bold=True, size=12)
+        cell.alignment = Alignment(horizontal="right", vertical="center")
+    
+    # Section 2: Détails des matériaux
+    row += 3
+    carbon_sheet.merge_cells(f'A{row}:F{row}')
+    cell = carbon_sheet.cell(row=row, column=1)
+    cell.value = "DÉTAILS DES MATÉRIAUX ET FACTEURS D'ÉMISSION"
+    cell.font = header_font
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.fill = header_fill
+    row += 1
+    
+    # En-têtes des détails
+    material_headers = [
+        "Matériau",
+        "Description",
+        "Facteur d'émission",
+        "Source",
+        "Détails",
+        "Impact total (kg CO2e)"
+    ]
+    
+    for col, header in enumerate(material_headers, 1):
+        cell = carbon_sheet.cell(row=row, column=col)
+        cell.value = header
+        cell.font = subheader_font
+        cell.fill = subheader_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    row += 1
+    
+    material_row_start = row
+    
+    # Données des matériaux
+    material_totals = defaultdict(float)
+    for element_type, carbon_value in carbon_data['by_type'].items():
+        material = carbon_data['material_mapping'].get(element_type, "Non spécifié")
+        material_totals[material] += carbon_value
+    
+    # Trier les matériaux par impact total
+    sorted_materials = sorted(
+        [(mat, data, material_totals.get(mat, 0)) 
+         for mat, data in carbon_data['material_factors'].items()],
+        key=lambda x: x[2],
+        reverse=True
+    )
+    
+    for material, material_data, total in sorted_materials:
+        cells = [
+            (material, "left"),
+            (material_data['description'], "left"),
+            (f"{material_data['factor']} kg CO2e/m³", "right"),
+            (material_data['source'], "left"),
+            (material_data['details'], "left"),
+            (f"{total:.2f}", "right")
+        ]
+        
+        for col, (value, align) in enumerate(cells, 1):
+            cell = carbon_sheet.cell(row=row, column=col)
+            cell.value = value
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+        row += 1
+    
+    material_row_end = row
+    
+    # Ajuster la hauteur des lignes pour le texte wrappé
+    for row_idx in range(material_row_start, material_row_end):
+        max_lines = max(
+            len(str(carbon_sheet.cell(row=row_idx, column=col).value).split('\n'))
+            for col in range(1, len(material_headers) + 1)
+        )
+        carbon_sheet.row_dimensions[row_idx].height = max(15 * max_lines, 30)
+    
+    # Ajouter les graphiques
+    # 1. Graphique à barres pour l'empreinte carbone par type d'élément
+    chart1 = BarChart()
+    chart1.type = "col"
+    chart1.style = 10
+    chart1.title = "Empreinte carbone par élément"
+    chart1.y_axis.title = "Empreinte carbone (kgCO2e)"
+    chart1.x_axis.title = "Éléments"
+    
+    data = Reference(carbon_sheet, min_col=3, min_row=row_start-1, max_row=row_end-1)
+    cats = Reference(carbon_sheet, min_col=1, min_row=row_start, max_row=row_end-1)
+    
+    chart1.add_data(data, titles_from_data=True)
+    chart1.set_categories(cats)
+    
+    chart1.height = 15
+    chart1.width = 25
+    
+    carbon_sheet.add_chart(chart1, "H2")
+    
+    # 2. Graphique circulaire pour la répartition par matériau
+    chart2 = PieChart()
+    chart2.title = "Répartition de l'empreinte carbone par matériau"
+    chart2.style = 10
+    
+    pie_data = Reference(carbon_sheet, min_col=6, min_row=material_row_start-1, max_row=material_row_end-1)
+    pie_labels = Reference(carbon_sheet, min_col=1, min_row=material_row_start, max_row=material_row_end-1)
+    
+    chart2.add_data(pie_data, titles_from_data=True)
+    chart2.set_categories(pie_labels)
+    
+    # Configuration des étiquettes de données
+    from openpyxl.chart.label import DataLabelList
+    chart2.dataLabels = DataLabelList()
+    chart2.dataLabels.showPercent = True
+    chart2.dataLabels.showVal = False
+    chart2.dataLabels.showCatName = True
+    
+    chart2.height = 15
+    chart2.width = 25
+    
+    carbon_sheet.add_chart(chart2, "H20")
+
 def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, output_file_path: str):
     start_time = time.time()
     print(f"Starting analysis...")
@@ -360,7 +713,12 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
         cell.font = header_font
     
     row = 2
-    for element in ifc_file.by_type("IfcElement"):
+    total_carbon_footprint = 0
+    carbon_footprint_by_type = defaultdict(float)
+    carbon_footprint_by_floor = defaultdict(float)
+    
+    print("Analyzing elements and calculating carbon footprint...")
+    for element in ifc_file.by_type('IfcElement'):
         if element.is_a() in element_types:
             if element.is_a() not in elements_by_class:
                 elements_by_class[element.is_a()] = {"total": 0, "valid": 0, "invalid": 0}
@@ -487,6 +845,16 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
                     missing_psets += 1
                 if has_missing_param:
                     missing_params += 1
+            
+            # Calcul de l'empreinte carbone
+            try:
+                carbon_footprint = calculate_carbon_footprint(ifc_file, element)
+                print(f"Carbon footprint for {element.is_a()}: {carbon_footprint:.2f} kg CO2e")
+                total_carbon_footprint += carbon_footprint
+                carbon_footprint_by_type[element.is_a()] += carbon_footprint
+                carbon_footprint_by_floor[floor] += carbon_footprint
+            except Exception as e:
+                print(f"Error calculating carbon footprint for {element.is_a()}: {str(e)}")
     
     # Statistiques globales
     total_elements = sum(stats["total"] for stats in elements_by_class.values())
@@ -495,6 +863,20 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
     
     # Créer l'onglet de résumé
     create_summary_sheet(workbook, total_elements, valid_elements, invalid_elements, missing_psets, missing_params, floor_stats, elements_by_class, required_psets_and_params)
+    
+    print(f"Creating carbon footprint sheet with total: {total_carbon_footprint:.2f} kg CO2e")
+    print(f"Carbon footprint by type: {dict(carbon_footprint_by_type)}")
+    print(f"Carbon footprint by floor: {dict(carbon_footprint_by_floor)}")
+    
+    # Ajouter la feuille d'empreinte carbone
+    carbon_data = {
+        'total': total_carbon_footprint,
+        'by_type': dict(carbon_footprint_by_type),
+        'by_floor': dict(carbon_footprint_by_floor),
+        'material_mapping': IFC_TO_MATERIAL_MAPPING,
+        'material_factors': MATERIAL_CARBON_FACTORS
+    }
+    create_carbon_footprint_sheet(workbook, carbon_data)
     
     # Ajuster les largeurs des colonnes
     for ws in workbook.worksheets:
@@ -525,7 +907,12 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
         "missing_elements": invalid_elements,
         "missing_psets": missing_psets,
         "missing_params": missing_params,
-        "floors": [{"name": floor, "valid": stats["valid"], "invalid": stats["invalid"]} for floor, stats in sorted_floors]
+        "floors": [{"name": floor, "valid": stats["valid"], "invalid": stats["invalid"]} for floor, stats in sorted_floors],
+        "carbon_footprint": {
+            "total": total_carbon_footprint,
+            "by_type": dict(carbon_footprint_by_type),
+            "by_floor": dict(carbon_footprint_by_floor)
+        }
     }
 
 @app.route('/')
