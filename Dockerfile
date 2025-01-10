@@ -44,7 +44,7 @@ RUN pip install --no-cache-dir --timeout 100 gunicorn==21.2.0
 RUN mkdir -p uploads temp
 
 # Exposition du port
-EXPOSE 8080
+EXPOSE 5050
 
 # Configuration pour la production
 ENV FLASK_ENV=production \
