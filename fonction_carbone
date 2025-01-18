@@ -1,0 +1,160 @@
+import ifcopenshell
+
+# Path to your IFC file
+IFC_FILE_PATH = '/Users/bouznir/Desktop/checkers_ia/uploads/OLYMPI_ARCHITECTURE_DCE_-26-janvier_O.ifc'
+
+# Recursive function to extract "Embodied Carbon" from nested IfcComplexProperty
+def extract_embodied_carbon(properties):
+    for key, value in properties.items():
+        if isinstance(value, dict):  # Check if this is a nested dictionary
+            if 'Embodied Carbon' in value.get('properties', {}):
+                try:
+                    return float(str(value['properties']['Embodied Carbon']).split()[0])  # Extract numeric value
+                except ValueError:
+                    print(f"Could not convert Embodied Carbon value: {value['properties']['Embodied Carbon']}")
+            # Recursively search deeper
+            result = extract_embodied_carbon(value.get('properties', {}))
+            if result is not None:
+                return result
+    return None
+
+# Function to calculate embodied carbon and quantities for each element
+def calculate_embodied_carbon(element):
+    try:
+        element_psets = ifcopenshell.util.element.get_psets(element)
+        embodied_carbon = None
+        quantity = None
+
+        # Debugging: List all available properties for this element
+        print(f"Available properties for element {element.GlobalId} ({element.is_a()}):")
+        for pset_name, params in element_psets.items():
+            print(f"  PSet: {pset_name}")
+            for param_name, param_value in params.items():
+                print(f"    {param_name}: {param_value}")
+
+        # Search for Embodied Carbon in Material Properties, including nested IfcComplexProperty
+        for pset_name, params in element_psets.items():
+            if "Material Properties" in pset_name and isinstance(params, dict):
+                embodied_carbon = extract_embodied_carbon(params)
+
+        # Search for quantities in BaseQuantities
+        if "BaseQuantities" in element_psets:
+            base_quantities = element_psets["BaseQuantities"]
+            if 'NetVolume' in base_quantities:
+                try:
+                    quantity = float(base_quantities['NetVolume'])
+                except ValueError:
+                    print(f"Could not convert NetVolume value: {base_quantities['NetVolume']}")
+
+        return embodied_carbon, quantity
+    except Exception as e:
+        print(f"Error reading embodied carbon or quantity: {e}")
+    return None, None
+
+# Main logic to process the IFC file and generate an HTML report
+def main():
+    try:
+        ifc_model = ifcopenshell.open(IFC_FILE_PATH)
+        total_elements = 0
+        total_carbon = 0
+        element_details = []
+
+        for element in ifc_model.by_type('IfcElement'):
+            total_elements += 1
+            carbon_value, quantity = calculate_embodied_carbon(element)
+
+            # Debugging output
+            if carbon_value is None or quantity is None:
+                print(f"Missing data for element {element.GlobalId} ({element.is_a()}): Carbon={carbon_value}, Quantity={quantity}")
+
+            # Include all elements in the report, even those missing data
+            element_details.append({
+                'GlobalId': element.GlobalId,
+                'Name': getattr(element, 'Name', 'Unknown'),
+                'Carbon': carbon_value if carbon_value is not None else "N/A",
+                'Quantity': quantity if quantity is not None else "N/A",
+                'TotalCarbon': (carbon_value * quantity) if (carbon_value is not None and quantity is not None) else "N/A"
+            })
+
+            # Calculate total carbon if data is complete
+            if carbon_value is not None and quantity is not None:
+                total_carbon += carbon_value * quantity
+
+        # Generate HTML report
+        html_content = """<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"UTF-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+    <title>Carbon Analysis Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        table, th, td {
+            border: 1px solid #ccc;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #f4f4f4;
+        }
+        .summary {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Carbon Analysis Report</h1>
+    <div class=\"summary\">
+        <p><strong>Total Elements:</strong> {total_elements}</p>
+        <p><strong>Total Embodied Carbon:</strong> {total_carbon:.2f} kg CO2e</p>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Global ID</th>
+                <th>Name</th>
+                <th>Embodied Carbon (kg CO2e/kg)</th>
+                <th>Quantity (m³)</th>
+                <th>Total Embodied Carbon (kg CO2e)</th>
+            </tr>
+        </thead>
+        <tbody>
+"""
+        for detail in element_details:
+            html_content += f"""
+            <tr>
+                <td>{detail['GlobalId']}</td>
+                <td>{detail['Name']}</td>
+                <td>{detail['Carbon']}</td>
+                <td>{detail['Quantity']}</td>
+                <td>{detail['TotalCarbon']}</td>
+            </tr>
+"""
+        html_content += """
+        </tbody>
+    </table>
+</body>
+</html>
+"""
+
+        # Write the HTML to a file
+        output_file = "carbon_analysis_report.html"
+        with open(output_file, "w") as file:
+            file.write(html_content)
+
+        print(f"Calculation completed. Report saved to {output_file}")
+    except Exception as e:
+        print(f"Error processing IFC file: {e}")
+
+if __name__ == '__main__':
+    main()
