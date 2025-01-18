@@ -1,4 +1,5 @@
 import ifcopenshell
+import json
 
 # Path to your IFC file
 IFC_FILE_PATH = '/Users/bouznir/Desktop/checkers_ia/uploads/OLYMPI_ARCHITECTURE_DCE_-26-janvier_O.ifc'
@@ -24,13 +25,6 @@ def calculate_embodied_carbon(element):
         element_psets = ifcopenshell.util.element.get_psets(element)
         embodied_carbon = None
         quantity = None
-
-        # Debugging: List all available properties for this element
-        print(f"Available properties for element {element.GlobalId} ({element.is_a()}):")
-        for pset_name, params in element_psets.items():
-            print(f"  PSet: {pset_name}")
-            for param_name, param_value in params.items():
-                print(f"    {param_name}: {param_value}")
 
         # Search for Embodied Carbon in Material Properties, including nested IfcComplexProperty
         for pset_name, params in element_psets.items():
@@ -58,58 +52,64 @@ def main():
         total_elements = 0
         total_carbon = 0
         element_details = []
+        carbon_by_type = {}
 
+        # Processing each element
         for element in ifc_model.by_type('IfcElement'):
             total_elements += 1
             carbon_value, quantity = calculate_embodied_carbon(element)
+            element_type = element.is_a()
 
-            # Debugging output
-            if carbon_value is None or quantity is None:
-                print(f"Missing data for element {element.GlobalId} ({element.is_a()}): Carbon={carbon_value}, Quantity={quantity}")
-
-            # Include all elements in the report, even those missing data
+            # Add to element details
+            total_carbon_element = (carbon_value * quantity) if carbon_value and quantity else 0
             element_details.append({
                 'GlobalId': element.GlobalId,
                 'Name': getattr(element, 'Name', 'Unknown'),
                 'Carbon': carbon_value if carbon_value is not None else "N/A",
                 'Quantity': quantity if quantity is not None else "N/A",
-                'TotalCarbon': (carbon_value * quantity) if (carbon_value is not None and quantity is not None) else "N/A"
+                'TotalCarbon': total_carbon_element
             })
 
-            # Calculate total carbon if data is complete
-            if carbon_value is not None and quantity is not None:
-                total_carbon += carbon_value * quantity
+            # Aggregate data by element type
+            if carbon_value and quantity:
+                total_carbon += total_carbon_element
+                carbon_by_type[element_type] = carbon_by_type.get(element_type, 0) + total_carbon_element
+
+        # Find the element with the highest carbon
+        highest_carbon_element = max(
+            element_details, key=lambda x: x['TotalCarbon'] if isinstance(x['TotalCarbon'], (int, float)) else 0
+        )
 
         # Generate HTML report
-        html_content = """<!DOCTYPE html>
+        html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Carbon Analysis Report</title>
+    <title>Carbon Analysis Summary</title>
     <style>
-        body {
+        body {{
             font-family: Arial, sans-serif;
             margin: 20px;
             background-color: #f9f9f9;
             color: #333;
-        }
-        h1 {
+        }}
+        h1 {{
             text-align: center;
             color: #2c3e50;
-        }
-        .summary {
+        }}
+        .summary {{
             margin-bottom: 20px;
             padding: 15px;
             background-color: #ecf0f1;
             border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-        .summary p {
+        }}
+        .summary p {{
             margin: 5px 0;
             font-size: 16px;
-        }
-        table {
+        }}
+        table {{
             border-collapse: collapse;
             width: 100%;
             margin-bottom: 20px;
@@ -117,62 +117,53 @@ def main():
             border-radius: 8px;
             overflow: hidden;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-        table, th, td {
+        }}
+        table, th, td {{
             border: 1px solid #ddd;
-        }
-        th, td {
+        }}
+        th, td {{
             padding: 10px;
             text-align: left;
-        }
-        th {
+        }}
+        th {{
             background-color: #34495e;
             color: white;
-        }
-        tbody tr:nth-child(even) {
+        }}
+        tbody tr:nth-child(even) {{
             background-color: #f2f2f2;
-        }
-        tbody tr:hover {
-            background-color: #e1f5fe;
-        }
-        .search-bar {
-            margin-bottom: 20px;
-            text-align: right;
-        }
-        .search-bar input {
-            padding: 8px;
-            font-size: 14px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        .footer {
-            margin-top: 20px;
-            text-align: center;
-            font-size: 14px;
-            color: #7f8c8d;
-        }
+        }}
     </style>
-    <script>
-        function searchTable() {
-            const input = document.getElementById('searchInput').value.toLowerCase();
-            const rows = document.querySelectorAll('tbody tr');
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(input) ? '' : 'none';
-            });
-        }
-    </script>
 </head>
 <body>
-    <h1>Carbon Analysis Report</h1>
+    <h1>Carbon Analysis Summary</h1>
     <div class="summary">
         <p><strong>Total Elements:</strong> {total_elements}</p>
         <p><strong>Total Embodied Carbon:</strong> {total_carbon:.2f} kg CO2e</p>
+        <p><strong>Highest Carbon Element:</strong> {highest_carbon_element['Name']} (ID: {highest_carbon_element['GlobalId']}) - {highest_carbon_element['TotalCarbon']:.2f} kg CO2e</p>
     </div>
-    <div class="search-bar">
-        <label for="searchInput">Search: </label>
-        <input type="text" id="searchInput" onkeyup="searchTable()" placeholder="Search for Global ID, Name, or values...">
-    </div>
+
+    <h2>Carbon Footprint by Element Type</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Element Type</th>
+                <th>Total Carbon (kg CO2e)</th>
+            </tr>
+        </thead>
+        <tbody>
+"""
+        for element_type, carbon in carbon_by_type.items():
+            html_content += f"""
+            <tr>
+                <td>{element_type}</td>
+                <td>{carbon:.2f}</td>
+            </tr>
+"""
+        html_content += """
+        </tbody>
+    </table>
+
+    <h2>Element Details</h2>
     <table>
         <thead>
             <tr>
@@ -198,22 +189,17 @@ def main():
         html_content += """
         </tbody>
     </table>
-    <div class="footer">
-        <p>Generated by Carbon Analysis Tool</p>
-    </div>
 </body>
 </html>
 """
-
-        # Write the HTML to a file
-        output_file = "carbon_analysis_report.html"
+        # Write the HTML report to a file
+        output_file = "carbon_analysis_summary.html"
         with open(output_file, "w") as file:
             file.write(html_content)
 
         print(f"Calculation completed. Report saved to {output_file}")
     except Exception as e:
         print(f"Error processing IFC file: {e}")
-
 
 if __name__ == '__main__':
     main()
