@@ -718,7 +718,7 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
     carbon_footprint_by_floor = defaultdict(float)
     
     print("Analyzing elements and calculating carbon footprint...")
-    for element in ifc_file.by_type('IfcElement'):
+    for element in ifc_file.by_type('IfcProduct'):
         if element.is_a() in element_types:
             if element.is_a() not in elements_by_class:
                 elements_by_class[element.is_a()] = {"total": 0, "valid": 0, "invalid": 0}
