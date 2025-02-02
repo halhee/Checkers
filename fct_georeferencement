@@ -1,0 +1,74 @@
+import ifcopenshell
+import folium
+
+def dms_to_decimal(dms):
+    """Convert latitude/longitude in DMS format to decimal degrees."""
+    degrees, minutes, seconds, direction = dms
+    decimal = degrees + minutes / 60 + seconds / 3600
+    if direction in ["S", "W"]:
+        decimal = -decimal
+    return decimal
+
+def extract_georeferencing(ifc_file_path):
+    """Extract georeferencing data from an IFC file."""
+    try:
+        # Open the IFC file
+        ifc_file = ifcopenshell.open(ifc_file_path)
+
+        # Get the site object
+        site = ifc_file.by_type("IfcSite")[0]
+
+        # Extract latitude, longitude, and elevation
+        latitude = site.RefLatitude  # Latitude in DMS
+        longitude = site.RefLongitude  # Longitude in DMS
+        elevation = site.RefElevation  # Elevation in meters
+
+        # Convert latitude and longitude to decimal format
+        latitude_decimal = dms_to_decimal(latitude)
+        longitude_decimal = dms_to_decimal(longitude)
+
+        return latitude_decimal, longitude_decimal, elevation
+
+    except Exception as e:
+        print(f"Error extracting georeferencing data: {e}")
+        return None, None, None
+
+def generate_map(latitude, longitude, elevation, output_file):
+    """Generate an interactive map with Folium."""
+    try:
+        # Create a map centered at the given coordinates
+        m = folium.Map(location=[latitude, longitude], zoom_start=15)
+
+        # Add a marker at the location
+        folium.Marker(
+            [latitude, longitude],
+            popup=f"\u00c9l\u00e9vation : {elevation} m"
+        ).add_to(m)
+
+        # Save the map to an HTML file
+        m.save(output_file)
+        print(f"Map saved to: {output_file}")
+
+    except Exception as e:
+        print(f"Error generating map: {e}")
+
+if __name__ == "__main__":
+    # Path to your IFC file
+    ifc_file_path = "/Users/bouznir/desktop/checkers_data/uploads/OLYMPI_ARCHITECTURE_DCE_-26-janvier_O.ifc"
+
+    # Output HTML file for the map
+    output_file = "carte_georeferencement.html"
+
+    # Extract georeferencing data
+    latitude, longitude, elevation = extract_georeferencing(ifc_file_path)
+
+    if latitude is not None and longitude is not None:
+        print("Georeferencing Data:")
+        print(f"Latitude: {latitude}")
+        print(f"Longitude: {longitude}")
+        print(f"Elevation: {elevation} m")
+
+        # Generate the map
+        generate_map(latitude, longitude, elevation, output_file)
+    else:
+        print("Failed to extract georeferencing data.")
