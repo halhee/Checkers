@@ -1,0 +1,170 @@
+import ifcopenshell
+import os
+import subprocess
+import hashlib
+import json
+import threading
+from ifcopenshell.util.unit import calculate_unit_scale
+from ifcopenshell.util.placement import get_local_placement
+from bisect import bisect_right
+
+# Configuration
+IFC_FILE_PATH = "ifc_files/Biment_B.ifc"
+OUTPUT_PATH = "outputs/analyse_annotee.txt"
+CACHE_PATH = "outputs/analysis_cache.json"
+OLLAMA_MODEL = "gemma"
+BATCH_SIZE = 5
+CACHE_LOCK = threading.Lock()
+
+def get_global_z_and_height(element):
+    """Récupère la position Z et la hauteur d'un objet IFC."""
+    try:
+        matrix = get_local_placement(element.ObjectPlacement)
+        z = matrix[2][3]  # Hauteur absolue
+        height = getattr(element, "OverallHeight", None) or getattr(element, "Height", None) or 0
+        return z, height
+    except Exception:
+        return None, None
+
+def get_closest_storey(z, height, storeys):
+    """Détermine si un objet est bien placé en fonction des hauteurs d'étages (Méthode Sandwich)."""
+    if not storeys:
+        return ("N/A", -1, False, "⚠️ Aucun étage trouvé, vérifiez si un étage manque.")
+
+    for i in range(len(storeys) - 1):
+        storey_name, storey_z = storeys[i]
+        next_storey_name, next_storey_z = storeys[i + 1]
+
+        # Vérifier si l'objet est dans un étage
+        if storey_z <= z < next_storey_z:
+            return storey_name, storey_z, True, f"✅ L'objet est bien dans l'étage {storey_name}"
+
+        # Vérifier si l'objet chevauche plusieurs étages
+        if storey_z < z + height <= next_storey_z:
+            return next_storey_name, next_storey_z, True, f"⚠️ L'objet chevauche {storey_name} et {next_storey_name}"
+
+    # Cas extrêmes : Trop bas ou trop haut
+    if z < storeys[0][1]:
+        return ("N/A", -1, False, "⚠️ Objet en dessous du premier étage, étage manquant ?")
+    if z > storeys[-1][1] + 3:  # Hypothèse d'une hauteur max de 3m
+        return ("N/A", -1, False, "⚠️ Objet au-dessus du dernier étage, étage manquant ?")
+
+    return ("N/A", -1, False, "❌ Objet non assignable à un étage")
+
+def query_ollama_batch(batch, use_cache=True):
+    """Analyse les erreurs IFC en lot via Ollama, avec gestion du cache."""
+    if not batch:
+        return {}
+
+    cache_keys = [hashlib.md5(f"{obj['guid']}-{obj['z']}-{obj['height']}".encode()).hexdigest() for obj in batch]
+
+    # Vérification du cache
+    if use_cache:
+        with CACHE_LOCK:
+            if os.path.exists(CACHE_PATH):
+                with open(CACHE_PATH, "r") as f:
+                    cache = json.load(f)
+                    if all(key in cache for key in cache_keys):
+                        return {obj["guid"]: cache[key] for obj, key in zip(batch, cache_keys)}
+
+    # Création du prompt optimisé
+    prompt = "[INSTRUCTION] Analyse rapide des erreurs IFC :\n"
+    for obj in batch:
+        prompt += f"- {obj['name']} (Z={obj['z']:.2f}m, H={obj['height']:.2f}m), Étage supposé: {obj['closest_storey'][0]}\n"
+
+    prompt += "\n[FORMAT] 'OK' ou 'ERREUR : [Correction]'\n"
+
+    try:
+        response = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL, prompt],
+            capture_output=True,
+            text=True,
+            timeout=40,
+            check=True
+        )
+        analysis = response.stdout.strip().split("\n")
+
+        with CACHE_LOCK:
+            cache = {}
+            if os.path.exists(CACHE_PATH):
+                with open(CACHE_PATH, "r") as f:
+                    cache = json.load(f)
+            for obj, key, result in zip(batch, cache_keys, analysis):
+                cache[key] = result
+            with open(CACHE_PATH, "w") as f:
+                json.dump(cache, f)
+
+        return {obj["guid"]: result for obj, result in zip(batch, analysis)}
+
+    except subprocess.TimeoutExpired:
+        return {obj["guid"]: "⏱️ Analyse expirée" for obj in batch}
+    except Exception as e:
+        return {obj["guid"]: f"⚠️ Erreur Ollama: {str(e)}" for obj in batch}
+
+def check_objects(ifc_file, unit_factor):
+    """Analyse tous les objets IFC et vérifie leur position par rapport aux étages."""
+    storeys = sorted(
+        [(s.Name, s.Elevation * unit_factor) for s in ifc_file.by_type("IfcBuildingStorey")],
+        key=lambda x: x[1]
+    )
+
+    results = []
+    for element in ifc_file.by_type("IfcProduct"):
+        z, height = get_global_z_and_height(element)
+        if z is None:
+            continue
+
+        z *= unit_factor
+        height *= unit_factor
+
+        closest_storey, storey_z, is_correct, message = get_closest_storey(z, height, storeys)
+
+        results.append({
+            "element": element,
+            "z": z,
+            "height": height,
+            "closest_storey": closest_storey,
+            "status": message
+        })
+
+    return results
+
+def main():
+    """Exécution du programme"""
+    if not os.path.exists(IFC_FILE_PATH):
+        print(f"❌ Fichier introuvable: {IFC_FILE_PATH}")
+        return
+
+    ifc_file = ifcopenshell.open(IFC_FILE_PATH)
+    unit_factor = calculate_unit_scale(ifc_file) or 1
+
+    # Création du dossier de sortie s'il n'existe pas
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+
+    results = check_objects(ifc_file, unit_factor)
+
+    incorrect_objects = [
+        {
+            "name": result["element"].Name,
+            "type": result["element"].is_a(),
+            "guid": result["element"].GlobalId,
+            "z": result["z"],
+            "height": result["height"],
+            "closest_storey": result["closest_storey"]
+        }
+        for result in results if "✅" not in result["status"]
+    ]
+
+    analyses = query_ollama_batch(incorrect_objects)
+
+    # Génération du rapport
+    with open(OUTPUT_PATH, "w") as f:
+        for result in results:
+            element = result["element"]
+            analysis = analyses.get(element.GlobalId, result["status"])
+            f.write(f"{element.Name} | Z={result['z']:.2f}m | {analysis}\n")
+
+    print(f"\n✅ Analyse générée dans {OUTPUT_PATH}")
+
+if __name__ == "__main__":
+    main()
