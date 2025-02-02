@@ -1,170 +1,111 @@
 import ifcopenshell
 import os
-import subprocess
-import hashlib
-import json
-import threading
-from ifcopenshell.util.unit import calculate_unit_scale
-from ifcopenshell.util.placement import get_local_placement
-from bisect import bisect_right
 
-# Configuration
-IFC_FILE_PATH = "ifc_files/Biment_B.ifc"
-OUTPUT_PATH = "outputs/analyse_annotee.txt"
-CACHE_PATH = "outputs/analysis_cache.json"
-OLLAMA_MODEL = "gemma"
-BATCH_SIZE = 5
-CACHE_LOCK = threading.Lock()
+# Chemin du fichier IFC
+IFC_FILE_PATH = "ifc_files/Biment_B.ifc"  # Ajuste selon ton fichier
 
-def get_global_z_and_height(element):
-    """Récupère la position Z et la hauteur d'un objet IFC."""
-    try:
-        matrix = get_local_placement(element.ObjectPlacement)
-        z = matrix[2][3]  # Hauteur absolue
-        height = getattr(element, "OverallHeight", None) or getattr(element, "Height", None) or 0
-        return z, height
-    except Exception:
-        return None, None
+def get_storeys(ifc_file):
+    """ Récupère les étages et leurs élévations. """
+    storeys = []
+    for storey in ifc_file.by_type("IfcBuildingStorey"):
+        elevation = storey.Elevation if storey.Elevation is not None else 0
+        storeys.append((storey, elevation))
+    storeys.sort(key=lambda x: x[1])  # Trier par élévation croissante
+    return storeys
 
-def get_closest_storey(z, height, storeys):
-    """Détermine si un objet est bien placé en fonction des hauteurs d'étages (Méthode Sandwich)."""
-    if not storeys:
-        return ("N/A", -1, False, "⚠️ Aucun étage trouvé, vérifiez si un étage manque.")
+def get_object_z(element):
+    """ Récupère la hauteur Z d'un objet à partir de son placement. """
+    if element.ObjectPlacement:
+        try:
+            placement = element.ObjectPlacement.RelativePlacement
+            if placement and hasattr(placement, "Location"):
+                coords = placement.Location.Coordinates
+                return coords[2] if len(coords) >= 3 else None
+        except AttributeError:
+            return None
+    return None
 
-    for i in range(len(storeys) - 1):
-        storey_name, storey_z = storeys[i]
-        next_storey_name, next_storey_z = storeys[i + 1]
+def check_objects(ifc_file):
+    """ Vérifie si des objets sont mal associés aux étages. """
+    storeys = get_storeys(ifc_file)
+    
+    # Déterminer les bornes Z de chaque étage
+    storey_bounds = []
+    for i, (storey, z) in enumerate(storeys):
+        z_top = storeys[i+1][1] if i+1 < len(storeys) else z + 3  # Estimation si dernier étage
+        storey_bounds.append((storey, z, z_top))
 
-        # Vérifier si l'objet est dans un étage
-        if storey_z <= z < next_storey_z:
-            return storey_name, storey_z, True, f"✅ L'objet est bien dans l'étage {storey_name}"
+    incorrect_objects = []
+    no_position_objects = []
 
-        # Vérifier si l'objet chevauche plusieurs étages
-        if storey_z < z + height <= next_storey_z:
-            return next_storey_name, next_storey_z, True, f"⚠️ L'objet chevauche {storey_name} et {next_storey_name}"
+    for element in ifc_file.by_type("IfcProduct"):  # Tous les objets ayant un placement
+        obj_z = get_object_z(element)
+        if obj_z is not None:
+            found = False
+            for storey, z_min, z_max in storey_bounds:
+                if z_min <= obj_z < z_max:
+                    found = True
+                    break
+            if not found:
+                incorrect_objects.append((element, obj_z))
+        else:
+            no_position_objects.append(element)
 
-    # Cas extrêmes : Trop bas ou trop haut
-    if z < storeys[0][1]:
-        return ("N/A", -1, False, "⚠️ Objet en dessous du premier étage, étage manquant ?")
-    if z > storeys[-1][1] + 3:  # Hypothèse d'une hauteur max de 3m
-        return ("N/A", -1, False, "⚠️ Objet au-dessus du dernier étage, étage manquant ?")
-
-    return ("N/A", -1, False, "❌ Objet non assignable à un étage")
-
-def query_ollama_batch(batch, use_cache=True):
-    """Analyse les erreurs IFC en lot via Ollama, avec gestion du cache."""
-    if not batch:
-        return {}
-
-    cache_keys = [hashlib.md5(f"{obj['guid']}-{obj['z']}-{obj['height']}".encode()).hexdigest() for obj in batch]
-
-    # Vérification du cache
-    if use_cache:
-        with CACHE_LOCK:
-            if os.path.exists(CACHE_PATH):
-                with open(CACHE_PATH, "r") as f:
-                    cache = json.load(f)
-                    if all(key in cache for key in cache_keys):
-                        return {obj["guid"]: cache[key] for obj, key in zip(batch, cache_keys)}
-
-    # Création du prompt optimisé
-    prompt = "[INSTRUCTION] Analyse rapide des erreurs IFC :\n"
-    for obj in batch:
-        prompt += f"- {obj['name']} (Z={obj['z']:.2f}m, H={obj['height']:.2f}m), Étage supposé: {obj['closest_storey'][0]}\n"
-
-    prompt += "\n[FORMAT] 'OK' ou 'ERREUR : [Correction]'\n"
-
-    try:
-        response = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL, prompt],
-            capture_output=True,
-            text=True,
-            timeout=40,
-            check=True
-        )
-        analysis = response.stdout.strip().split("\n")
-
-        with CACHE_LOCK:
-            cache = {}
-            if os.path.exists(CACHE_PATH):
-                with open(CACHE_PATH, "r") as f:
-                    cache = json.load(f)
-            for obj, key, result in zip(batch, cache_keys, analysis):
-                cache[key] = result
-            with open(CACHE_PATH, "w") as f:
-                json.dump(cache, f)
-
-        return {obj["guid"]: result for obj, result in zip(batch, analysis)}
-
-    except subprocess.TimeoutExpired:
-        return {obj["guid"]: "⏱️ Analyse expirée" for obj in batch}
-    except Exception as e:
-        return {obj["guid"]: f"⚠️ Erreur Ollama: {str(e)}" for obj in batch}
-
-def check_objects(ifc_file, unit_factor):
-    """Analyse tous les objets IFC et vérifie leur position par rapport aux étages."""
-    storeys = sorted(
-        [(s.Name, s.Elevation * unit_factor) for s in ifc_file.by_type("IfcBuildingStorey")],
-        key=lambda x: x[1]
-    )
-
-    results = []
-    for element in ifc_file.by_type("IfcProduct"):
-        z, height = get_global_z_and_height(element)
-        if z is None:
-            continue
-
-        z *= unit_factor
-        height *= unit_factor
-
-        closest_storey, storey_z, is_correct, message = get_closest_storey(z, height, storeys)
-
-        results.append({
-            "element": element,
-            "z": z,
-            "height": height,
-            "closest_storey": closest_storey,
-            "status": message
-        })
-
-    return results
+    return incorrect_objects, no_position_objects, storey_bounds  # Retourne aussi les étages pour analyse
 
 def main():
-    """Exécution du programme"""
     if not os.path.exists(IFC_FILE_PATH):
-        print(f"❌ Fichier introuvable: {IFC_FILE_PATH}")
+        print(f"Erreur : Fichier IFC non trouvé -> {IFC_FILE_PATH}")
         return
 
+    print(f"🔍 Analyse du fichier IFC : {IFC_FILE_PATH}")
     ifc_file = ifcopenshell.open(IFC_FILE_PATH)
-    unit_factor = calculate_unit_scale(ifc_file) or 1
+    incorrect_objs, no_position_objs, storey_bounds = check_objects(ifc_file)
 
-    # Création du dossier de sortie s'il n'existe pas
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    output_path = "outputs/resultats.txt"
+    
+    # ✅ Créer le dossier 'outputs' s'il n'existe pas
+    output_dir = os.path.dirname(output_path)
+    os.makedirs(output_dir, exist_ok=True)
 
-    results = check_objects(ifc_file, unit_factor)
+    # ✅ Écriture du fichier après s'être assuré que le dossier existe
+    with open(output_path, "w") as f:
+        for obj, z in incorrect_objs:
+            # Trouver l'étage le plus proche basé sur la distance aux bornes de chaque étage
+            closest_storey = min(
+                storey_bounds,
+                key=lambda s: min(abs(z - s[1]), abs(z - s[2]))
+            )
 
-    incorrect_objects = [
-        {
-            "name": result["element"].Name,
-            "type": result["element"].is_a(),
-            "guid": result["element"].GlobalId,
-            "z": result["z"],
-            "height": result["height"],
-            "closest_storey": result["closest_storey"]
-        }
-        for result in results if "✅" not in result["status"]
-    ]
+            storey_obj, storey_z_min, storey_z_max = closest_storey
+            storey_name = storey_obj.Name
 
-    analyses = query_ollama_batch(incorrect_objects)
+            # Déterminer si l'objet est plus proche du bas ou du haut de l'étage trouvé
+            if abs(z - storey_z_min) < abs(z - storey_z_max):
+                position_suggestion = "Il semble être situé légèrement sous l’étage."
+            else:
+                position_suggestion = "Il semble être placé juste au-dessus de l’étage."
 
-    # Génération du rapport
-    with open(OUTPUT_PATH, "w") as f:
-        for result in results:
-            element = result["element"]
-            analysis = analyses.get(element.GlobalId, result["status"])
-            f.write(f"{element.Name} | Z={result['z']:.2f}m | {analysis}\n")
+            # Message détaillé
+            result = (
+                f"⚠️ L’objet '{obj.Name}' (ID: {obj.GlobalId}) est actuellement à Z={z} m.\n"
+                f"📍 Il devrait être rattaché à l’étage '{storey_name}' "
+                f"qui s'étend de {storey_z_min} m à {storey_z_max} m.\n"
+                f"🔎 {position_suggestion} Vérifiez son placement ou son association IFC.\n\n"
+            )
+            
+            print(result, end="")
+            f.write(result)
 
-    print(f"\n✅ Analyse générée dans {OUTPUT_PATH}")
+        if no_position_objs:
+            f.write("\n🚨 Objets sans position détectés :\n")
+            print("\n🚨 Objets sans position détectés :")
+            for obj in no_position_objs:
+                msg = f"❌ L’objet '{obj.Name}' (ID: {obj.GlobalId}) n’a pas de position définie.\n"
+                print(msg, end="")
+                f.write(msg)
+
+    print(f"\n✅ Analyse terminée. Résultats enregistrés dans {output_path}")
 
 if __name__ == "__main__":
     main()
