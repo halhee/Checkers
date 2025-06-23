@@ -3,7 +3,7 @@
 Checkers est une application web permettant de valider des fichiers IFC (Industry Foundation Classes) en vérifiant la présence et la conformité des Property Sets (PSet) et des paramètres requis.
 
 <div align="center">
-  <img src="static/Sanstitre.png" alt="Checkers Logo" width="200">
+  <img src="static/Sanstitre.png" alt="Checkers Logo" width="600">
 </div>
 
 ## Fonctionnalités
