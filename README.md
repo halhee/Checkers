@@ -108,5 +108,6 @@ Ce projet est sous licence MIT. Voir le fichier `LICENSE` pour plus de détails.
 ## Contact
 
 ZKHCHICHE - khchiche.zakaria@gmail.com
+ABOUZNIR - ali.bouznir@gmail.com 
 
 Lien du projet : [https://github.com/halhee/Checkers](https://github.com/halhee/Checkers)
