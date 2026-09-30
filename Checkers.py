@@ -954,7 +954,7 @@ def upload():
         try:
             profile = load_profile(profile_id)
         except (ValueError, OSError, json.JSONDecodeError) as error:
-            return jsonify({"error": str(error)}), 400
+            return jsonify({"error": "Profil d'analyse invalide."}), 400
 
         validation_enabled = profile['modules'].get('validation', False)
         if 'ifc_file' not in request.files:
