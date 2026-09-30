@@ -936,9 +936,9 @@ def upload():
             print("Empty filenames")
             return jsonify({"error": "No selected file"}), 400
         
-        if not allowed_file(ifc_file.filename) or not allowed_file(excel_file.filename):
+        if not ifc_file.filename.lower().endswith('.ifc') or not excel_file.filename.lower().endswith('.xlsx'):
             print("Invalid file types")
-            return jsonify({"error": "Invalid file type"}), 400
+            return jsonify({"error": "L'IFC doit être .ifc et les règles .xlsx"}), 400
         
         # Générer un ID unique pour cette analyse
         analysis_id = str(uuid.uuid4())
@@ -948,7 +948,7 @@ def upload():
             os.makedirs(analysis_dir, exist_ok=True)
         except Exception as e:
             print(f"Error creating analysis directory: {str(e)}")
-            return jsonify({"error": f"Could not create analysis directory: {str(e)}"}), 500
+            return jsonify({"error": "Impossible de préparer l'analyse."}), 500
         
         # Sauvegarder les fichiers
         ifc_path = os.path.join(analysis_dir, secure_filename(ifc_file.filename))
@@ -961,7 +961,7 @@ def upload():
             excel_file.save(excel_path)
         except Exception as e:
             print(f"Error saving files: {str(e)}")
-            return jsonify({"error": f"Could not save files: {str(e)}"}), 500
+            return jsonify({"error": "Impossible d'enregistrer les fichiers."}), 500
         
         # Analyser les fichiers
         print("Starting analysis...")
@@ -972,7 +972,7 @@ def upload():
             return jsonify(results)
         except Exception as e:
             print(f"Error during analysis: {str(e)}")
-            return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+            return jsonify({"error": "Analyse impossible. Consultez les journaux du serveur."}), 500
         
     except Exception as e:
         print(f"Unexpected error during upload: {str(e)}")
@@ -995,7 +995,7 @@ def download(analysis_id):
         
     except Exception as e:
         print(f"Error during download: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Une erreur interne est survenue."}), 500
 
 if __name__ == '__main__':
     # Configuration du port via variable d'environnement pour Vercel
