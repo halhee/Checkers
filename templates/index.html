@@ -110,22 +110,45 @@
         #dashboard {
             display: none;
         }
+        select {
+            width: 100%;
+            padding: 10px;
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+        }
+        .help-text {
+            color: #AAAAAA;
+            margin-top: 6px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <img class="logo" src="{{ url_for('static', filename='checkers.png') }}" alt="Checkers Logo">
-        <h1>Checkers - Validation IFC</h1>
+        <h1>Checkers</h1>
         
+        <div class="form-group">
+                <label for="profile">Type d'analyse</label>
+                <select id="profile" name="profile">
+                    <option value="complet" selected>Complet — validation + carbone</option>
+                    <option value="standard">Standard — validation IFC</option>
+                    <option value="carbone">Carbone — estimation carbone uniquement</option>
+                </select>
+                <p id="profileHelp" class="help-text">Validation IFC et estimation carbone dans le même rapport.</p>
+            </div>
+            
         <form id="uploadForm">
             <div class="form-group">
-                <label for="ifc_file">Fichier IFC</label>
+                <label for="ifc_file">Maquette IFC</label>
                 <input type="file" id="ifc_file" name="ifc_file" accept=".ifc" required>
             </div>
             
-            <div class="form-group">
-                <label for="excel_file">Fichier Excel</label>
-                <input type="file" id="excel_file" name="excel_file" accept=".xlsx" required>
+            <div class="form-group" id="excelGroup">
+                <label for="excel_file">Fichier Excel de règles</label>
+                <input type="file" id="excel_file" name="excel_file" accept=".xlsx">
+                <p class="help-text">Utilisé par les profils Standard et Complet pour vérifier les PSet et paramètres.</p>
             </div>
             
             <button type="submit" class="btn-primary">Analyser</button>
@@ -136,15 +159,15 @@
 
         <div id="dashboard" class="results">
             <div class="stats-container">
-                <div class="stat-box">
+                <div class="stat-box validation-stat">
                     <div class="stat-value" id="totalElements">-</div>
                     <div class="stat-label">Éléments totaux</div>
                 </div>
-                <div class="stat-box">
+                <div class="stat-box validation-stat">
                     <div class="stat-value" id="validElements">-</div>
                     <div class="stat-label">Éléments valides</div>
                 </div>
-                <div class="stat-box">
+                <div class="stat-box validation-stat">
                     <div class="stat-value" id="missingElements">-</div>
                     <div class="stat-label">Éléments invalides</div>
                 </div>
@@ -155,10 +178,10 @@
             </div>
 
             <div class="charts-container">
-                <div class="chart-box">
+                <div class="chart-box" id="statusChartBox">
                     <canvas id="statusChart"></canvas>
                 </div>
-                <div class="chart-box">
+                <div class="chart-box" id="floorChartBox">
                     <canvas id="floorChart"></canvas>
                 </div>
                 <div class="chart-box">
@@ -177,6 +200,26 @@
         let floorChart = null;
         let carbonByTypeChart = null;
         let carbonByFloorChart = null;
+        const profileSelect = document.getElementById('profile');
+        const excelGroup = document.getElementById('excelGroup');
+        const excelFile = document.getElementById('excel_file');
+        const profileHelp = document.getElementById('profileHelp');
+
+        const profileDescriptions = {
+            standard: 'Contrôle les PSet et paramètres définis dans le fichier Excel.',
+            carbone: 'Calcule l’estimation carbone à partir de la maquette IFC, sans fichier Excel.',
+            complet: 'Lance la validation IFC et l’estimation carbone dans le même rapport.'
+        };
+
+        function updateProfileForm() {
+            const validationEnabled = profileSelect.value !== 'carbone';
+            excelGroup.style.display = validationEnabled ? 'block' : 'none';
+            excelFile.required = validationEnabled;
+            profileHelp.textContent = profileDescriptions[profileSelect.value];
+        }
+
+        profileSelect.addEventListener('change', updateProfileForm);
+        updateProfileForm();
 
         document.getElementById('uploadForm').addEventListener('submit', function(e) {
             e.preventDefault();
@@ -210,7 +253,7 @@
                 // Store the analysis ID
                 currentAnalysisId = data.analysis_id;
                 
-                // Update statistics
+                // Mettre à jour les statistiques et les graphiques du profil sélectionné.
                 updateCharts(data);
             })
             .catch(error => {
@@ -221,17 +264,22 @@
         });
 
         function updateCharts(data) {
-            // Mise à jour des statistiques
+            const validationEnabled = data.profile_id !== 'carbone';
+            document.querySelectorAll('.validation-stat').forEach((element) => {
+                element.style.display = validationEnabled ? 'block' : 'none';
+            });
+            document.getElementById('statusChartBox').style.display = validationEnabled ? 'block' : 'none';
+            document.getElementById('floorChartBox').style.display = validationEnabled ? 'block' : 'none';
+
             document.getElementById('totalElements').textContent = data.total_elements;
             document.getElementById('validElements').textContent = data.valid_elements;
             document.getElementById('missingElements').textContent = data.missing_elements;
             document.getElementById('totalCarbonFootprint').textContent = Math.round(data.carbon_footprint.total).toLocaleString();
 
-            // Mise à jour des graphiques existants
-            updateStatusChart(data);
-            updateFloorChart(data.floors);
-
-            // Mise à jour des nouveaux graphiques d'empreinte carbone
+            if (validationEnabled) {
+                updateStatusChart(data);
+                updateFloorChart(data.floors);
+            }
             updateCarbonByTypeChart(data.carbon_footprint.by_type);
             updateCarbonByFloorChart(data.carbon_footprint.by_floor);
         }

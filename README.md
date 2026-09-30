@@ -111,3 +111,14 @@ ZKHCHICHE - khchiche.zakaria@gmail.com
 ABOUZNIR - ali.bouznir@gmail.com 
 
 Lien du projet : [https://github.com/halhee/Checkers](https://github.com/halhee/Checkers)
+
+
+## Profils d'analyse
+
+L'application propose désormais un parcours unique avec trois profils :
+
+- **Standard** : validation des PSet et paramètres à partir d'un fichier Excel de règles.
+- **Carbone** : estimation carbone à partir du fichier IFC uniquement ; le fichier Excel n'est pas nécessaire.
+- **Complet** : validation IFC et estimation carbone dans le même rapport.
+
+Le profil est choisi depuis l'interface avant l'envoi de la maquette. Les profils sont stockés dans profiles/ afin d'ajouter des variantes sans dupliquer l'application.

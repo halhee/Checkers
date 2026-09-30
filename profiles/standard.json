@@ -1,0 +1,10 @@
+{
+  "id": "standard",
+  "name": "Validation standard",
+  "description": "Validation des PSet et paramètres à partir d'un fichier Excel.",
+  "requires_excel": true,
+  "modules": {
+    "validation": true,
+    "carbon": false
+  }
+}

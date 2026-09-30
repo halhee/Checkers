@@ -1,0 +1,10 @@
+{
+  "id": "complet",
+  "name": "Analyse complète",
+  "description": "Validation IFC et estimation carbone.",
+  "requires_excel": true,
+  "modules": {
+    "validation": true,
+    "carbon": true
+  }
+}
