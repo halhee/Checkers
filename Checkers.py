@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, send_file, abort, jsonify
 import os
+import json
 import tempfile
 import ifcopenshell
 import ifcopenshell.util.element
@@ -28,6 +29,21 @@ app.config['MAX_CONTENT_LENGTH'] = 300 * 1024 * 1024  # 300 Mo
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 TEMP_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
+PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profiles')
+DEFAULT_PROFILE = 'complet'
+
+
+def load_profile(profile_id):
+    profile_id = (profile_id or DEFAULT_PROFILE).strip().lower()
+    if not profile_id.isalnum():
+        raise ValueError('Profil invalide')
+
+    profile_path = os.path.join(PROFILE_DIR, f'{profile_id}.json')
+    if not os.path.isfile(profile_path):
+        raise ValueError(f'Profil inconnu: {profile_id}')
+
+    with open(profile_path, 'r', encoding='utf-8') as profile_file:
+        return json.load(profile_file)
 
 # Créer les dossiers nécessaires
 print(f"Creating folders: {UPLOAD_FOLDER}, {TEMP_FOLDER}")
@@ -690,13 +706,23 @@ def create_carbon_footprint_sheet(workbook, carbon_data):
     
     carbon_sheet.add_chart(chart2, "H20")
 
-def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, output_file_path: str):
+def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, output_file_path: str, profile: dict):
     start_time = time.time()
-    print(f"Starting analysis...")
-    
-    # Chargement des données
-    element_types = load_element_types(excel_file_path)
-    required_psets_and_params = load_required_psets_and_params(excel_file_path)
+    print(f"Starting analysis with profile: {profile['id']}")
+
+    validation_enabled = profile['modules'].get('validation', False)
+    carbon_enabled = profile['modules'].get('carbon', False)
+
+    if validation_enabled:
+        if not excel_file_path:
+            raise ValueError('Un fichier Excel de règles est requis pour ce profil')
+        element_types = load_element_types(excel_file_path)
+        required_psets_and_params = load_required_psets_and_params(excel_file_path)
+    else:
+        # Le profil carbone fonctionne sans fichier de règles.
+        element_types = set(IFC_TO_MATERIAL_MAPPING.keys())
+        required_psets_and_params = {}
+
     ifc_file = ifcopenshell.open(ifc_file_path)
     model_name = os.path.basename(ifc_file_path)
     
@@ -751,96 +777,49 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
     print("Analyzing elements and calculating carbon footprint...")
     for element in ifc_file.by_type('IfcProduct'):
         if element.is_a() in element_types:
-            if element.is_a() not in elements_by_class:
-                elements_by_class[element.is_a()] = {"total": 0, "valid": 0, "invalid": 0}
-            
-            elements_by_class[element.is_a()]["total"] += 1
+            if validation_enabled:
+                if element.is_a() not in elements_by_class:
+                    elements_by_class[element.is_a()] = {"total": 0, "valid": 0, "invalid": 0}
+                elements_by_class[element.is_a()]["total"] += 1
+
             floor = get_building_storey(ifc_file, element)
-            element_psets = ifcopenshell.util.element.get_psets(element)
+            element_psets = ifcopenshell.util.element.get_psets(element) if validation_enabled else {}
             element_valid = True
             has_missing_pset = False
             has_missing_param = False
             
-            # Vérification des PSet et paramètres requis
-            for pset_name, params in required_psets_and_params[element.is_a()].items():
-                if pset_name not in element_psets:
-                    element_valid = False
-                    has_missing_pset = True
-                    
-                    cells = [
-                        (1, element.is_a(), left_alignment),
-                        (2, str(floor), left_alignment),
-                        (3, element.GlobalId, center_alignment),
-                        (4, getattr(element, 'Name', ''), left_alignment),
-                        (5, pset_name, left_alignment),
-                        (6, "TOUS", center_alignment),
-                        (7, "MANQUANT", center_alignment),
-                        (8, "KO", center_alignment)
-                    ]
-                    
-                    for col, value, alignment in cells:
-                        cell = details.cell(row=row, column=col)
-                        cell.value = value
-                        cell.alignment = alignment
-                        cell.border = border
-                        cell.font = normal_font
-                        cell.fill = ko_fill if col == 8 else no_fill
-                    
-                    row += 1
-                else:
-                    for param_name, param_type in params.items():
-                        actual_value = element_psets[pset_name].get(param_name)
+            if validation_enabled:
+                # Vérification des PSet et paramètres requis
+                for pset_name, params in required_psets_and_params.get(element.is_a(), {}).items():
+                    if pset_name not in element_psets:
+                        element_valid = False
+                        has_missing_pset = True
                         
-                        if actual_value is None:
-                            element_valid = False
-                            has_missing_param = True
+                        cells = [
+                            (1, element.is_a(), left_alignment),
+                            (2, str(floor), left_alignment),
+                            (3, element.GlobalId, center_alignment),
+                            (4, getattr(element, 'Name', ''), left_alignment),
+                            (5, pset_name, left_alignment),
+                            (6, "TOUS", center_alignment),
+                            (7, "MANQUANT", center_alignment),
+                            (8, "KO", center_alignment)
+                        ]
+                        
+                        for col, value, alignment in cells:
+                            cell = details.cell(row=row, column=col)
+                            cell.value = value
+                            cell.alignment = alignment
+                            cell.border = border
+                            cell.font = normal_font
+                            cell.fill = ko_fill if col == 8 else no_fill
+                        
+                        row += 1
+                    else:
+                        for param_name, param_type in params.items():
+                            actual_value = element_psets[pset_name].get(param_name)
                             
-                            cells = [
-                                (1, element.is_a(), left_alignment),
-                                (2, str(floor), left_alignment),
-                                (3, element.GlobalId, center_alignment),
-                                (4, getattr(element, 'Name', ''), left_alignment),
-                                (5, pset_name, left_alignment),
-                                (6, param_name, left_alignment),
-                                (7, "MANQUANT", center_alignment),
-                                (8, "KO", center_alignment)
-                            ]
-                            
-                            for col, value, alignment in cells:
-                                cell = details.cell(row=row, column=col)
-                                cell.value = value
-                                cell.alignment = alignment
-                                cell.border = border
-                                cell.font = normal_font
-                                cell.fill = ko_fill if col == 8 else no_fill
-                            
-                            row += 1
-                        else:
-                            try:
-                                param_type_class = str_to_type(param_type)
-                                param_type_class(actual_value)
-                                
-                                cells = [
-                                    (1, element.is_a(), left_alignment),
-                                    (2, str(floor), left_alignment),
-                                    (3, element.GlobalId, center_alignment),
-                                    (4, getattr(element, 'Name', ''), left_alignment),
-                                    (5, pset_name, left_alignment),
-                                    (6, param_name, left_alignment),
-                                    (7, str(actual_value), left_alignment),
-                                    (8, "OK", center_alignment)
-                                ]
-                                
-                                for col, value, alignment in cells:
-                                    cell = details.cell(row=row, column=col)
-                                    cell.value = value
-                                    cell.alignment = alignment
-                                    cell.border = border
-                                    cell.font = normal_font
-                                    cell.fill = ok_fill if col == 8 else no_fill
-                                
-                                row += 1
-                            except (ValueError, TypeError):
+                            if actual_value is None:
                                 element_valid = False
                                 has_missing_param = True
                                 
@@ -851,7 +830,7 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
                                     (4, getattr(element, 'Name', ''), left_alignment),
                                     (5, pset_name, left_alignment),
                                     (6, param_name, left_alignment),
-                                    (7, f"{actual_value} (attendu: {param_type})", left_alignment),
+                                    (7, "MANQUANT", center_alignment),
                                     (8, "KO", center_alignment)
                                 ]
                                 
@@ -864,50 +843,98 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
                                     cell.fill = ko_fill if col == 8 else no_fill
                                 
                                 row += 1
-            
-            # Mise à jour des statistiques
-            if element_valid:
-                elements_by_class[element.is_a()]["valid"] += 1
-                floor_stats[floor]["valid"] += 1
-            else:
-                elements_by_class[element.is_a()]["invalid"] += 1
-                floor_stats[floor]["invalid"] += 1
-                if has_missing_pset:
-                    missing_psets += 1
-                if has_missing_param:
-                    missing_params += 1
-            
+                            else:
+                                try:
+                                    param_type_class = str_to_type(param_type)
+                                    param_type_class(actual_value)
+                                    
+                                    cells = [
+                                        (1, element.is_a(), left_alignment),
+                                        (2, str(floor), left_alignment),
+                                        (3, element.GlobalId, center_alignment),
+                                        (4, getattr(element, 'Name', ''), left_alignment),
+                                        (5, pset_name, left_alignment),
+                                        (6, param_name, left_alignment),
+                                        (7, str(actual_value), left_alignment),
+                                        (8, "OK", center_alignment)
+                                    ]
+                                    
+                                    for col, value, alignment in cells:
+                                        cell = details.cell(row=row, column=col)
+                                        cell.value = value
+                                        cell.alignment = alignment
+                                        cell.border = border
+                                        cell.font = normal_font
+                                        cell.fill = ok_fill if col == 8 else no_fill
+                                    
+                                    row += 1
+                                except (ValueError, TypeError):
+                                    element_valid = False
+                                    has_missing_param = True
+                                    
+                                    cells = [
+                                        (1, element.is_a(), left_alignment),
+                                        (2, str(floor), left_alignment),
+                                        (3, element.GlobalId, center_alignment),
+                                        (4, getattr(element, 'Name', ''), left_alignment),
+                                        (5, pset_name, left_alignment),
+                                        (6, param_name, left_alignment),
+                                        (7, f"{actual_value} (attendu: {param_type})", left_alignment),
+                                        (8, "KO", center_alignment)
+                                    ]
+                                    
+                                    for col, value, alignment in cells:
+                                        cell = details.cell(row=row, column=col)
+                                        cell.value = value
+                                        cell.alignment = alignment
+                                        cell.border = border
+                                        cell.font = normal_font
+                                        cell.fill = ko_fill if col == 8 else no_fill
+                                    
+                                    row += 1
+                
+            # Mise à jour des statistiques de validation
+            if validation_enabled:
+                if element_valid:
+                    elements_by_class[element.is_a()]["valid"] += 1
+                    floor_stats[floor]["valid"] += 1
+                else:
+                    elements_by_class[element.is_a()]["invalid"] += 1
+                    floor_stats[floor]["invalid"] += 1
+                    if has_missing_pset:
+                        missing_psets += 1
+                    if has_missing_param:
+                        missing_params += 1
+                
             # Calcul de l'empreinte carbone
-            try:
-                carbon_footprint = calculate_carbon_footprint(ifc_file, element)
-                print(f"Carbon footprint for {element.is_a()}: {carbon_footprint:.2f} kg CO2e")
-                total_carbon_footprint += carbon_footprint
-                carbon_footprint_by_type[element.is_a()] += carbon_footprint
-                carbon_footprint_by_floor[floor] += carbon_footprint
-            except Exception as e:
-                print(f"Error calculating carbon footprint for {element.is_a()}: {str(e)}")
-    
+            if carbon_enabled:
+                try:
+                    carbon_footprint = calculate_carbon_footprint(ifc_file, element)
+                    print(f"Carbon footprint for {element.is_a()}: {carbon_footprint:.2f} kg CO2e")
+                    total_carbon_footprint += carbon_footprint
+                    carbon_footprint_by_type[element.is_a()] += carbon_footprint
+                    carbon_footprint_by_floor[floor] += carbon_footprint
+                except Exception as e:
+                    print(f"Error calculating carbon footprint for {element.is_a()}: {str(e)}")
+        
     # Statistiques globales
     total_elements = sum(stats["total"] for stats in elements_by_class.values())
     valid_elements = sum(stats["valid"] for stats in elements_by_class.values())
     invalid_elements = sum(stats["invalid"] for stats in elements_by_class.values())
     
-    # Créer l'onglet de résumé
-    create_summary_sheet(workbook, total_elements, valid_elements, invalid_elements, missing_psets, missing_params, floor_stats, elements_by_class, required_psets_and_params)
-    
-    print(f"Creating carbon footprint sheet with total: {total_carbon_footprint:.2f} kg CO2e")
-    print(f"Carbon footprint by type: {dict(carbon_footprint_by_type)}")
-    print(f"Carbon footprint by floor: {dict(carbon_footprint_by_floor)}")
-    
-    # Ajouter la feuille d'empreinte carbone
-    carbon_data = {
-        'total': total_carbon_footprint,
-        'by_type': dict(carbon_footprint_by_type),
-        'by_floor': dict(carbon_footprint_by_floor),
-        'material_mapping': IFC_TO_MATERIAL_MAPPING,
-        'material_factors': MATERIAL_CARBON_FACTORS
-    }
-    create_carbon_footprint_sheet(workbook, carbon_data)
+    # Ajouter uniquement les feuilles correspondant au profil choisi.
+    if validation_enabled:
+        create_summary_sheet(workbook, total_elements, valid_elements, invalid_elements, missing_psets, missing_params, floor_stats, elements_by_class, required_psets_and_params)
+
+    if carbon_enabled:
+        carbon_data = {
+            'total': total_carbon_footprint,
+            'by_type': dict(carbon_footprint_by_type),
+            'by_floor': dict(carbon_footprint_by_floor),
+            'material_mapping': IFC_TO_MATERIAL_MAPPING,
+            'material_factors': MATERIAL_CARBON_FACTORS
+        }
+        create_carbon_footprint_sheet(workbook, carbon_data)
     
     # Ajuster les largeurs des colonnes
     for ws in workbook.worksheets:
@@ -942,6 +969,7 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
         "missing_psets": missing_psets,
         "missing_params": missing_params,
         "floors": [{"name": floor, "valid": stats["valid"], "invalid": stats["invalid"]} for floor, stats in sorted_floors],
+        "profile_id": profile['id'],
         "carbon_footprint": {
             "total": total_carbon_footprint,
             "by_type": dict(carbon_footprint_by_type),
@@ -956,55 +984,56 @@ def index():
 @app.route('/upload', methods=['POST'])
 def upload():
     try:
-        print("Starting upload...")
-        if 'ifc_file' not in request.files or 'excel_file' not in request.files:
-            print("Missing files in request")
-            return jsonify({"error": "Missing file"}), 400
-        
+        profile_id = request.form.get('profile', DEFAULT_PROFILE)
+        try:
+            profile = load_profile(profile_id)
+        except (ValueError, OSError, json.JSONDecodeError) as error:
+            return jsonify({"error": "Profil d'analyse invalide."}), 400
+
+        validation_enabled = profile['modules'].get('validation', False)
+        if 'ifc_file' not in request.files:
+            return jsonify({"error": "Aucun fichier IFC fourni"}), 400
+
         ifc_file = request.files['ifc_file']
-        excel_file = request.files['excel_file']
-        
-        print(f"Received files: IFC={ifc_file.filename}, Excel={excel_file.filename}")
-        
-        if ifc_file.filename == '' or excel_file.filename == '':
-            print("Empty filenames")
-            return jsonify({"error": "No selected file"}), 400
-        
-        if not ifc_file.filename.lower().endswith('.ifc') or not excel_file.filename.lower().endswith('.xlsx'):
-            print("Invalid file types")
-            return jsonify({"error": "L'IFC doit être .ifc et les règles .xlsx"}), 400
-        
-        # Générer un ID unique pour cette analyse
+        excel_file = request.files.get('excel_file')
+
+        if not ifc_file.filename:
+            return jsonify({"error": "Aucun fichier IFC sélectionné"}), 400
+        if validation_enabled and (excel_file is None or not excel_file.filename):
+            return jsonify({"error": "Ce profil nécessite un fichier Excel de règles"}), 400
+        if not ifc_file.filename.lower().endswith('.ifc'):
+            return jsonify({"error": "Le fichier IFC doit avoir l'extension .ifc"}), 400
+        if excel_file and excel_file.filename and not excel_file.filename.lower().endswith('.xlsx'):
+            return jsonify({"error": "Le fichier de règles doit avoir l'extension .xlsx"}), 400
+
+        # Supprimer les analyses expirées, puis préparer un dossier dédié
         cleanup_old_analyses()
         analysis_id = str(uuid.uuid4())
         analysis_dir = os.path.join(TEMP_FOLDER, analysis_id)
-        print(f"Creating analysis directory: {analysis_dir}")
         try:
             os.makedirs(analysis_dir, exist_ok=True)
         except Exception as e:
             print(f"Error creating analysis directory: {str(e)}")
             return jsonify({"error": "Impossible de préparer l'analyse."}), 500
-        
-        # Sauvegarder les fichiers
+
         ifc_path = os.path.join(analysis_dir, secure_filename(ifc_file.filename))
-        excel_path = os.path.join(analysis_dir, secure_filename(excel_file.filename))
+        excel_path = None
         output_path = os.path.join(analysis_dir, f'output_{os.path.splitext(secure_filename(ifc_file.filename))[0]}.xlsx')
-        
-        print(f"Saving files to: {ifc_path}, {excel_path}")
+
         try:
             ifc_file.save(ifc_path)
-            excel_file.save(excel_path)
+            if excel_file and excel_file.filename:
+                excel_path = os.path.join(analysis_dir, secure_filename(excel_file.filename))
+                excel_file.save(excel_path)
         except Exception as e:
             print(f"Error saving files: {str(e)}")
             shutil.rmtree(analysis_dir, ignore_errors=True)
             return jsonify({"error": "Impossible d'enregistrer les fichiers."}), 500
 
-        # Analyser les fichiers
-        print("Starting analysis...")
         try:
-            results = process_files(analysis_dir, ifc_path, excel_path, output_path)
+            results = process_files(analysis_dir, ifc_path, excel_path, output_path, profile)
             results["analysis_id"] = analysis_id
-            print("Analysis completed successfully")
+            results["profile_name"] = profile["name"]
             return jsonify(results)
         except Exception as e:
             print(f"Error during analysis: {str(e)}")
@@ -1013,11 +1042,12 @@ def upload():
         finally:
             # Les fichiers envoyés ne sont plus utiles : seul le rapport est conservé
             for path in (ifc_path, excel_path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        
+                if path:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
     except Exception as e:
         print(f"Unexpected error during upload: {str(e)}")
         return jsonify({"error": "Une erreur interne est survenue."}), 500

@@ -1,0 +1,10 @@
+{
+  "id": "carbone",
+  "name": "Analyse carbone",
+  "description": "Estimation carbone à partir de la maquette IFC.",
+  "requires_excel": false,
+  "modules": {
+    "validation": false,
+    "carbon": true
+  }
+}
