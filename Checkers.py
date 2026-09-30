@@ -967,9 +967,9 @@ def upload():
             return jsonify({"error": "Aucun fichier IFC sélectionné"}), 400
         if validation_enabled and (excel_file is None or not excel_file.filename):
             return jsonify({"error": "Ce profil nécessite un fichier Excel de règles"}), 400
-        if not allowed_file(ifc_file.filename):
+        if not ifc_file.filename.lower().endswith('.ifc'):
             return jsonify({"error": "Le fichier IFC doit avoir l'extension .ifc"}), 400
-        if excel_file and excel_file.filename and not allowed_file(excel_file.filename):
+        if excel_file and excel_file.filename and not excel_file.filename.lower().endswith('.xlsx'):
             return jsonify({"error": "Le fichier de règles doit avoir l'extension .xlsx"}), 400
 
         analysis_id = str(uuid.uuid4())
@@ -978,7 +978,7 @@ def upload():
 
         ifc_path = os.path.join(analysis_dir, secure_filename(ifc_file.filename))
         excel_path = None
-        output_path = os.path.join(analysis_dir, f'output_{os.path.splitext(ifc_file.filename)[0]}.xlsx')
+        output_path = os.path.join(analysis_dir, f'output_{os.path.splitext(secure_filename(ifc_file.filename))[0]}.xlsx')
 
         ifc_file.save(ifc_path)
         if excel_file and excel_file.filename:
@@ -992,11 +992,11 @@ def upload():
             return jsonify(results)
         except Exception as error:
             print(f"Error during analysis: {str(error)}")
-            return jsonify({"error": f"Analyse impossible: {str(error)}"}), 500
+            return jsonify({"error": "Analyse impossible. Consultez les journaux du serveur."}), 500
 
     except Exception as error:
         print(f"Unexpected error during upload: {str(error)}")
-        return jsonify({"error": str(error)}), 500
+        return jsonify({"error": "Une erreur interne est survenue."}), 500
 
 @app.route('/download/<analysis_id>')
 def download(analysis_id):
@@ -1015,7 +1015,7 @@ def download(analysis_id):
         
     except Exception as e:
         print(f"Error during download: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Une erreur interne est survenue."}), 500
 
 if __name__ == '__main__':
     # Configuration du port via variable d'environnement pour Vercel
