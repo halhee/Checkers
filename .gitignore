@@ -38,3 +38,21 @@ wheels/
 venv/
 ENV/
 env/
+.venv/
+
+# Secrets et configuration locale (ne jamais publier)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+
+# Fichiers de sauvegarde
+*.save
+*.bak
+*.orig
+
+# Système
+.DS_Store
+__MACOSX/

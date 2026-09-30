@@ -981,6 +981,11 @@ def upload():
 @app.route('/download/<analysis_id>')
 def download(analysis_id):
     try:
+        # N'accepter que des identifiants UUID générés par /upload
+        try:
+            analysis_id = str(uuid.UUID(analysis_id))
+        except ValueError:
+            return jsonify({"error": "Analysis not found"}), 404
         analysis_dir = os.path.join(TEMP_FOLDER, analysis_id)
         if not os.path.exists(analysis_dir):
             return jsonify({"error": "Analysis not found"}), 404

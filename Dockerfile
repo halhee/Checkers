@@ -13,15 +13,7 @@ COPY . /app/
 
 # Mise à jour de pip et installation des dépendances Python
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --timeout 100 \
-    numpy==1.24.3 \
-    Flask==2.3.3 \
-    Werkzeug==2.3.7 \
-    python-dotenv==1.0.0 \
-    pandas==2.1.0 \
-    openpyxl==3.1.2 \
-    ifcopenshell==0.7.0.240627 \
-    gunicorn==21.2.0
+    pip install --no-cache-dir --timeout 100 -r requirements.txt
 
 # Création des répertoires nécessaires
 RUN mkdir -p uploads temp
@@ -36,8 +28,8 @@ RUN useradd --create-home --shell /bin/bash myuser
 RUN chown -R myuser:myuser /app
 USER myuser
 
-# Exposition du port 5050
-EXPOSE 5050
+# Exposition du port (gunicorn écoute sur 8080, publié en 5050 par docker-compose)
+EXPOSE 8080
 
 # Commande pour démarrer l'application avec Gunicorn
 CMD ["gunicorn", "--workers", "3", "--threads", "2", "--timeout", "60", "--bind", "0.0.0.0:8080", "Checkers:app"]
