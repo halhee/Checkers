@@ -953,7 +953,7 @@ def upload():
         # Sauvegarder les fichiers
         ifc_path = os.path.join(analysis_dir, secure_filename(ifc_file.filename))
         excel_path = os.path.join(analysis_dir, secure_filename(excel_file.filename))
-        output_path = os.path.join(analysis_dir, f'output_{os.path.splitext(ifc_file.filename)[0]}.xlsx')
+        output_path = os.path.join(analysis_dir, f'output_{os.path.splitext(secure_filename(ifc_file.filename))[0]}.xlsx')
         
         print(f"Saving files to: {ifc_path}, {excel_path}")
         try:
@@ -976,7 +976,7 @@ def upload():
         
     except Exception as e:
         print(f"Unexpected error during upload: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Une erreur interne est survenue."}), 500
 
 @app.route('/download/<analysis_id>')
 def download(analysis_id):

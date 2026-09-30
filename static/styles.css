@@ -52,7 +52,7 @@ button:hover {
 }
 
 .logo {
-    background-image: url('/Users/bouznira/Desktop/Checkers2/static/logo.png');
+    background-image: url('/static/checkers.png');
     background-size: cover;
     width: 100px;
     height: 100px;
