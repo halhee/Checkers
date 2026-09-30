@@ -34,15 +34,46 @@ print(f"Creating folders: {UPLOAD_FOLDER}, {TEMP_FOLDER}")
 for folder in [UPLOAD_FOLDER, TEMP_FOLDER]:
     if not os.path.exists(folder):
         try:
-            os.makedirs(folder, mode=0o777, exist_ok=True)
+            os.makedirs(folder, mode=0o750, exist_ok=True)
             print(f"Created folder: {folder}")
         except Exception as e:
             print(f"Error creating folder {folder}: {str(e)}")
 
 ALLOWED_EXTENSIONS = {'ifc', 'xlsx'}
 
+# Durée de conservation des analyses (fichiers envoyés et rapports) sur le serveur
+ANALYSIS_RETENTION_SECONDS = int(os.environ.get('ANALYSIS_RETENTION_SECONDS', 3600))
+
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def neutralize_formulas(workbook) -> None:
+    """Empêche l'injection de formules dans le rapport Excel.
+
+    Le rapport ne contient aucune formule volontaire : une valeur qui commence
+    par « = » vient forcément du fichier IFC ou Excel envoyé (nom d'élément,
+    d'étage, de PSet...). On la conserve telle quelle, mais comme du texte.
+    """
+    for ws in workbook.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.data_type == 'f':
+                    cell.data_type = 's'
+
+def cleanup_old_analyses(max_age_seconds: int = ANALYSIS_RETENTION_SECONDS) -> None:
+    """Supprime les dossiers d'analyse plus anciens que la durée de conservation."""
+    now = time.time()
+    try:
+        entries = os.listdir(TEMP_FOLDER)
+    except OSError:
+        return
+    for name in entries:
+        path = os.path.join(TEMP_FOLDER, name)
+        try:
+            if os.path.isdir(path) and now - os.path.getmtime(path) > max_age_seconds:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
 
 def load_element_types(file):
     element_types = {}
@@ -894,6 +925,9 @@ def process_files(temp_dir: str, ifc_file_path: str, excel_file_path: str, outpu
     # Figer les volets dans l'onglet de détails
     details.freeze_panes = 'A2'
     
+    # Sécurité : aucune formule ne doit provenir des fichiers envoyés
+    neutralize_formulas(workbook)
+
     # Sauvegarder le fichier
     print(f"Saving file... ({time.time() - start_time:.2f}s)")
     workbook.save(output_file_path)
@@ -941,6 +975,7 @@ def upload():
             return jsonify({"error": "L'IFC doit être .ifc et les règles .xlsx"}), 400
         
         # Générer un ID unique pour cette analyse
+        cleanup_old_analyses()
         analysis_id = str(uuid.uuid4())
         analysis_dir = os.path.join(TEMP_FOLDER, analysis_id)
         print(f"Creating analysis directory: {analysis_dir}")
@@ -961,8 +996,9 @@ def upload():
             excel_file.save(excel_path)
         except Exception as e:
             print(f"Error saving files: {str(e)}")
+            shutil.rmtree(analysis_dir, ignore_errors=True)
             return jsonify({"error": "Impossible d'enregistrer les fichiers."}), 500
-        
+
         # Analyser les fichiers
         print("Starting analysis...")
         try:
@@ -972,7 +1008,15 @@ def upload():
             return jsonify(results)
         except Exception as e:
             print(f"Error during analysis: {str(e)}")
+            shutil.rmtree(analysis_dir, ignore_errors=True)
             return jsonify({"error": "Analyse impossible. Consultez les journaux du serveur."}), 500
+        finally:
+            # Les fichiers envoyés ne sont plus utiles : seul le rapport est conservé
+            for path in (ifc_path, excel_path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
         
     except Exception as e:
         print(f"Unexpected error during upload: {str(e)}")
