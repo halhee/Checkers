@@ -87,6 +87,31 @@ def _valid_analysis_id(analysis_id: str) -> bool:
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Durée de conservation des dossiers d'analyse sur le serveur (fichiers
+# envoyés + rapport généré) -- les fichiers IFC/Excel uploadés peuvent
+# contenir des données de projet réelles, inutile de les garder
+# indéfiniment dans temp/ une fois l'analyse terminée.
+ANALYSIS_RETENTION_SECONDS = int(os.environ.get('ANALYSIS_RETENTION_SECONDS', 3600))
+
+
+def cleanup_old_analyses(max_age_seconds: int = ANALYSIS_RETENTION_SECONDS) -> None:
+    """Supprime les dossiers d'analyse de TEMP_FOLDER plus vieux que
+    `max_age_seconds`. Appelé à chaque upload plutôt que via un cron/thread
+    séparé -- suffisant pour une app mono-instance, pas de dépendance
+    supplémentaire à faire tourner."""
+    now = time.time()
+    try:
+        entries = os.listdir(TEMP_FOLDER)
+    except OSError:
+        return
+    for name in entries:
+        path = os.path.join(TEMP_FOLDER, name)
+        try:
+            if os.path.isdir(path) and now - os.path.getmtime(path) > max_age_seconds:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
+
 # Un .xlsx est une archive ZIP de XML -- Python ne limite pas la taille
 # décompressée par défaut ("zip bomb" : un petit fichier qui explose en
 # mémoire à la décompression ; démontré en test manuel : 500 Mo de données
@@ -1146,6 +1171,12 @@ def upload():
 
         print(f"Received {len(lot_uploads)} lot(s), Excel={excel_file.filename}")
 
+        # Purge les analyses précédentes plus vieilles que la rétention avant
+        # d'en créer une nouvelle -- évite d'accumuler indéfiniment des
+        # fichiers IFC/Excel uploadés (données de projet potentiellement
+        # sensibles) dans temp/.
+        cleanup_old_analyses()
+
         # Générer un ID unique pour cette analyse
         analysis_id = str(uuid.uuid4())
         analysis_dir = os.path.join(TEMP_FOLDER, analysis_id)
@@ -1161,12 +1192,14 @@ def upload():
             excel_file.save(excel_path)
         except Exception as e:
             print(f"Error saving Excel file: {str(e)}")
+            shutil.rmtree(analysis_dir, ignore_errors=True)
             return jsonify({"error": f"Could not save Excel file: {str(e)}"}), 500
 
         try:
             _reject_if_zip_bomb(excel_path)
         except ValueError as e:
             print(f"Rejected Excel file: {str(e)}")
+            shutil.rmtree(analysis_dir, ignore_errors=True)
             return jsonify({"error": str(e)}), 400
 
         # Un sous-dossier par lot (évite les collisions de nom de fichier
@@ -1183,6 +1216,7 @@ def upload():
                 ifc_file.save(ifc_path)
             except Exception as e:
                 print(f"Error saving IFC file for lot '{lot_name}': {str(e)}")
+                shutil.rmtree(analysis_dir, ignore_errors=True)
                 return jsonify({"error": f"Could not save IFC file for lot '{lot_name}': {str(e)}"}), 500
             lots.append((lot_name, ifc_path, explicit_code))
             lot_folders.append(folder)
@@ -1207,9 +1241,18 @@ def upload():
                 # un échec de persistance ne doit jamais invalider une analyse
                 # par ailleurs réussie, dont le rapport Excel est déjà sur disque.
                 print(f"Warning: could not record analysis history: {str(e)}")
+            # Le fichier Excel de règles n'est plus utile une fois l'analyse
+            # terminée (contrairement aux IFC par lot, encore nécessaires à la
+            # visionneuse 3D via /model/<analysis_id>/<lot_folder>) -- inutile
+            # de le garder sur disque.
+            try:
+                os.remove(excel_path)
+            except OSError:
+                pass
             return jsonify(results)
         except Exception as e:
             print(f"Error during analysis: {str(e)}")
+            shutil.rmtree(analysis_dir, ignore_errors=True)
             return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
     except Exception as e:

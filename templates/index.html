@@ -4,11 +4,14 @@
     <meta charset="UTF-8">
     <title>Checkers - Validation IFC</title>
     <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Version figée + intégrité (SRI) : empêche l'exécution de JS modifié
+         si jsdelivr est un jour compromis -- un CDN non versionné/non vérifié
+         est un point d'entrée supply-chain classique. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
     <!-- Carte du site (onglet Géoréférencement) -- Leaflet + fond OpenStreetMap,
          pas de clé API requise. -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
     <!-- Visionneuse 3D (chargée à la demande, voir openViewer()) -- versions figées
          volontairement, écosystème qui bouge vite. web-ifc-viewer/web-ifc-three sont
          dépréciés, @thatopen/components est le successeur maintenu. -->

@@ -44,8 +44,13 @@ venv/
 ENV/
 env/
 
-# Agents IA / configuration locale
+# Secrets et configuration locale -- ne jamais publier
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
 data/.cloud_spend.json
 
 # Historique des analyses (SQLite, propre à chaque poste -- voir history.py)
@@ -55,7 +60,10 @@ data/checkers_history.db-shm
 
 # Fichiers machine/éditeur locaux
 .DS_Store
+__MACOSX/
 *.save
+*.bak
+*.orig
 .claude/
 
 # IDE
