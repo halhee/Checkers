@@ -1,0 +1,63 @@
+# Dossiers temporaires
+temp/
+uploads/
+
+# Fichiers Docker
+*.tar
+*.tar.gz
+
+# Fichiers IFC -- des données de projet réelles, jamais sur le dépôt (y
+# compris compressées : *.ifc.zip n'était pas couvert par *.tar.gz ci-dessus)
+*.ifc
+*.ifc.zip
+
+# Fichiers Excel -- idem, données de paramètres réelles d'un projet ; le
+# fichier d'exemple fourni avec le projet est une exception volontaire
+*.xlsx
+!exemple_parametres_corps_etat.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environnement virtuel
+venv/
+.venv/
+ENV/
+env/
+
+# Agents IA / configuration locale
+.env
+data/.cloud_spend.json
+
+# Historique des analyses (SQLite, propre à chaque poste -- voir history.py)
+data/checkers_history.db
+data/checkers_history.db-wal
+data/checkers_history.db-shm
+
+# Fichiers machine/éditeur locaux
+.DS_Store
+*.save
+.claude/
+
+# IDE
+.vscode/
+.idea/

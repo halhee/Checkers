@@ -1,0 +1,19 @@
+{
+    "version": 2,
+    "builds": [
+        {
+            "src": "Checkers.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/(.*)",
+            "dest": "Checkers.py"
+        }
+    ],
+    "env": {
+        "PYTHONPATH": ".",
+        "ENABLE_AI_RECOMMENDATIONS": "false"
+    }
+}

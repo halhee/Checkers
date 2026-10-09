@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Checkers - Validation IFC</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Carte du site (onglet Géoréférencement) -- Leaflet + fond OpenStreetMap,
+         pas de clé API requise. -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Visionneuse 3D (chargée à la demande, voir openViewer()) -- versions figées
+         volontairement, écosystème qui bouge vite. web-ifc-viewer/web-ifc-three sont
+         dépréciés, @thatopen/components est le successeur maintenu. -->
+    <script type="importmap">
+    {
+        "imports": {
+            "@thatopen/components": "https://cdn.jsdelivr.net/npm/@thatopen/components@3.4.8/+esm"
+        }
+    }
+    </script>
+    <style>
+        body {
+            font-family: 'Lato', sans-serif;
+            background-color: #1a1a1a;
+            color: #FFFFFF;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            margin: 0 auto;
+            max-width: 1200px;
+        }
+        .logo {
+            display: block;
+            margin: 0 auto 20px;
+            height: 300px;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #FFFFFF;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+        }
+        .btn-primary {
+            width: 100%;
+            padding: 10px;
+            background-color: #007bff;
+            border: none;
+            border-radius: 4px;
+            color: #FFFFFF;
+            cursor: pointer;
+            margin-bottom: 10px;
+        }
+        .btn-success {
+            width: 100%;
+            padding: 10px;
+            background-color: #28a745;
+            border: none;
+            border-radius: 4px;
+            color: #FFFFFF;
+            cursor: pointer;
+        }
+        .results {
+            margin-top: 40px;
+        }
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-box {
+            background-color: #333;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            font-size: 0.9rem;
+            color: #999;
+        }
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 30px;
+        }
+        .chart-box {
+            background-color: #333;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+            font-size: 1.2rem;
+            color: #FFFFFF;
+        }
+        #downloadButton {
+            display: none;
+        }
+        #dashboard {
+            display: none;
+        }
+        .reliability-badge {
+            font-size: 0.75rem;
+            color: #bbb;
+            margin-top: 6px;
+        }
+        .recommendations-synthesis {
+            background-color: #2a2a2a;
+            border: 1px solid #444;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+        }
+        .recommendations-synthesis h3 {
+            margin-top: 0;
+            font-size: 1.1rem;
+        }
+        .recommendations-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 20px;
+        }
+        @media (max-width: 900px) {
+            .recommendations-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        .recommendation-box {
+            background-color: #333;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .recommendation-box h3 {
+            margin-top: 0;
+            font-size: 1.1rem;
+        }
+        .recommendation-box ul {
+            padding-left: 20px;
+            margin: 0;
+        }
+        .recommendation-box li {
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+        .recommendation-degraded {
+            color: #999;
+            font-style: italic;
+        }
+        #recommendationsBadge {
+            grid-column: 1 / -1;
+            font-size: 0.8rem;
+            color: #999;
+            text-align: center;
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid #444;
+            margin-bottom: 20px;
+        }
+        .tab-button {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: #999;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        .tab-button:hover {
+            color: #ccc;
+        }
+        .tab-button.active {
+            color: #FFFFFF;
+            border-bottom-color: #007bff;
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+        .viewer-panel {
+            position: relative;
+            width: 100%;
+            height: 70vh;
+            background-color: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        #viewerContainer {
+            width: 100%;
+            height: 100%;
+        }
+        .viewer-status {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            z-index: 1;
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .site-map {
+            display: none;
+            width: 100%;
+            height: 70vh;
+            border-radius: 8px;
+        }
+        .geo-message {
+            display: none;
+            color: #999;
+            font-style: italic;
+            padding: 40px 20px;
+            text-align: center;
+        }
+        .lot-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .lot-row input[type="text"] {
+            flex: 0 0 160px;
+            padding: 8px;
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+        }
+        .lot-row input[type="file"] {
+            flex: 1;
+            padding: 8px;
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+        }
+        .lot-row select {
+            flex: 0 0 170px;
+            padding: 8px;
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+        }
+        .lot-row button {
+            flex: 0 0 auto;
+            padding: 8px 12px;
+            background-color: #555;
+            border: none;
+            border-radius: 4px;
+            color: #FFFFFF;
+            cursor: pointer;
+        }
+        .btn-add-lot {
+            width: 100%;
+            padding: 8px;
+            background-color: #333;
+            border: 1px dashed #555;
+            border-radius: 4px;
+            color: #ccc;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .lot-comparison-scroll {
+            width: 100%;
+            overflow-x: auto;
+            margin-top: 30px;
+            background-color: #333;
+            border-radius: 8px;
+        }
+        .lot-comparison-table {
+            width: 100%;
+            min-width: 640px;
+            border-collapse: collapse;
+        }
+        .lot-comparison-table th, .lot-comparison-table td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid #444;
+        }
+        .lot-comparison-table th {
+            background-color: #2a2a2a;
+            color: #ccc;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+        .lot-selector {
+            margin-bottom: 10px;
+        }
+        .lot-selector select {
+            padding: 6px 10px;
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+        }
+        .history-section {
+            margin-top: 30px;
+            margin-bottom: 30px;
+        }
+        .history-section h2 {
+            font-size: 1.1rem;
+            color: #ccc;
+            margin-bottom: 10px;
+        }
+        .history-empty {
+            color: #888;
+            font-style: italic;
+        }
+        .history-trend {
+            width: 100%;
+            max-width: 100%;
+            height: 220px;
+            margin-bottom: 16px;
+            padding: 12px;
+            background-color: #333;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+        .history-scroll {
+            width: 100%;
+            overflow-x: auto;
+            background-color: #333;
+            border-radius: 8px;
+        }
+        .history-table {
+            width: 100%;
+            min-width: 640px;
+            border-collapse: collapse;
+        }
+        .history-table th, .history-table td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid #444;
+        }
+        .history-table th {
+            background-color: #2a2a2a;
+            color: #ccc;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+        .compare-panel {
+            margin-top: 20px;
+            padding: 16px;
+            background-color: #333;
+            border-radius: 8px;
+        }
+        .compare-panel h3 {
+            margin-top: 0;
+            font-size: 1rem;
+            color: #ccc;
+        }
+        .compare-controls {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .compare-controls label {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 0.85rem;
+            color: #ccc;
+        }
+        .compare-controls select {
+            padding: 6px 10px;
+            background-color: #262626;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #FFFFFF;
+            min-width: 220px;
+        }
+        .compare-summary {
+            display: flex;
+            gap: 14px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .compare-stat {
+            padding: 10px 16px;
+            border-radius: 6px;
+            background-color: #262626;
+            font-size: 0.9rem;
+        }
+        .compare-stat.resolved { border-left: 4px solid #4CAF50; }
+        .compare-stat.new { border-left: 4px solid #F44336; }
+        .compare-stat.persistent { border-left: 4px solid #FFC107; }
+        .anomaly-group h4 {
+            margin: 14px 0 6px;
+            font-size: 0.9rem;
+        }
+        .anomaly-group.resolved h4 { color: #4CAF50; }
+        .anomaly-group.new h4 { color: #F44336; }
+        .anomaly-group.persistent h4 { color: #FFC107; }
+        .anomaly-list {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        .anomaly-list th, .anomaly-list td {
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 1px solid #444;
+        }
+        .anomaly-list th {
+            color: #999;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img class="logo" src="{{ url_for('static', filename='checkers.png') }}" alt="Checkers Logo">
+        <h1>Checkers - Validation IFC</h1>
+        
+        <form id="uploadForm">
+            <div class="form-group">
+                <label>Lots (un fichier IFC par lot/discipline -- ex. Architecture, Structure, CVC)</label>
+                <div id="lotList"></div>
+                <button type="button" class="btn-add-lot" onclick="addLotRow()">+ Ajouter un lot</button>
+            </div>
+
+            <div class="form-group">
+                <label for="excel_file">Fichier Excel (paramètres requis, partagé par tous les lots)</label>
+                <input type="file" id="excel_file" name="excel_file" accept=".xlsx" required>
+            </div>
+
+            <div class="form-group">
+                <label for="analysis_label">Repère (optionnel -- ex. nom du projet/chantier, affiché dans l'historique et la Fiche de Recette)</label>
+                <input type="text" id="analysis_label" name="analysis_label" placeholder="Par défaut : nom du fichier Excel">
+            </div>
+
+            <button type="submit" class="btn-primary">Analyser</button>
+            <button type="button" id="downloadButton" class="btn-success" onclick="downloadReport()">Télécharger le rapport Excel</button>
+        </form>
+
+        <div id="loading">Analyse en cours...</div>
+
+        <div id="historySection" class="history-section">
+            <h2>Historique des analyses</h2>
+            <p class="history-empty" id="historyEmpty">Aucune analyse enregistrée pour l'instant -- lance une première analyse ci-dessus.</p>
+            <div class="history-trend" id="historyTrendContainer" style="display: none;">
+                <canvas id="historyTrendChart"></canvas>
+            </div>
+
+            <div class="history-scroll" id="historyScroll" style="display: none;">
+                <table class="history-table" id="historyTable">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Repère</th>
+                            <th>Lots</th>
+                            <th>Taux de validité</th>
+                            <th>Anomalies ouvertes</th>
+                            <th>Carbone (kg CO2e)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyBody"></tbody>
+                </table>
+            </div>
+
+            <div class="compare-panel" id="comparePanel" style="display: none;">
+                <h3>Comparer deux analyses</h3>
+                <div class="compare-controls">
+                    <label for="compareBefore">Avant
+                        <select id="compareBefore"></select>
+                    </label>
+                    <label for="compareAfter">Après
+                        <select id="compareAfter"></select>
+                    </label>
+                    <button type="button" class="btn-primary" onclick="runComparison()">Comparer</button>
+                </div>
+                <div id="compareResult"></div>
+            </div>
+        </div>
+
+        <div id="dashboard" class="results">
+            <div class="tabs">
+                <button type="button" class="tab-button active" id="resultsTabButton" onclick="switchTab('results')">Résultats</button>
+                <button type="button" class="tab-button" id="viewerTabButton" onclick="switchTab('viewer')">Maquette 3D</button>
+                <button type="button" class="tab-button" id="geoTabButton" onclick="switchTab('geo')">Géoréférencement</button>
+            </div>
+
+            <div id="resultsTabPanel" class="tab-panel active">
+                <div class="stats-container">
+                    <div class="stat-box">
+                        <div class="stat-value" id="totalElements">-</div>
+                        <div class="stat-label">Éléments totaux</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="validElements">-</div>
+                        <div class="stat-label">Éléments valides</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="missingElements">-</div>
+                        <div class="stat-label">Éléments invalides</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="totalCarbonFootprint">-</div>
+                        <div class="stat-label">Empreinte carbone totale (kg CO2e)</div>
+                        <div class="reliability-badge" id="carbonReliabilityBadge"></div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="anomalyCount">-</div>
+                        <div class="stat-label">Anomalies ouvertes (lot/étage/type/PSet)</div>
+                    </div>
+                </div>
+
+                <div class="lot-comparison-scroll" id="lotComparisonScroll" style="display: none;">
+                    <table class="lot-comparison-table" id="lotComparisonTable">
+                        <thead>
+                            <tr>
+                                <th>Lot</th>
+                                <th>Corps d'état détecté</th>
+                                <th>Total éléments</th>
+                                <th>Valides</th>
+                                <th>Taux de validité</th>
+                                <th>Empreinte carbone (kg CO2e)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="lotComparisonBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="charts-container">
+                    <div class="chart-box">
+                        <canvas id="statusChart"></canvas>
+                    </div>
+                    <div class="chart-box">
+                        <canvas id="floorChart"></canvas>
+                    </div>
+                    <div class="chart-box">
+                        <canvas id="carbonByTypeChart"></canvas>
+                    </div>
+                    <div class="chart-box">
+                        <canvas id="carbonByFloorChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="recommendations-synthesis">
+                    <h3>Synthèse (priorités croisées)</h3>
+                    <div id="synthesisRecommendation"></div>
+                </div>
+
+                <div class="recommendations-container">
+                    <div class="recommendation-box">
+                        <h3>Expert carbone</h3>
+                        <div id="carbonExpertBox"></div>
+                    </div>
+                    <div class="recommendation-box">
+                        <h3>Expert qualité des données</h3>
+                        <div id="dataQualityExpertBox"></div>
+                    </div>
+                    <div class="recommendation-box">
+                        <h3>Expert métier / risques projet</h3>
+                        <div id="businessExpertBox"></div>
+                    </div>
+                    <div id="recommendationsBadge"></div>
+                </div>
+            </div>
+
+            <div id="viewerTabPanel" class="tab-panel">
+                <div class="lot-selector" id="viewerLotSelectorContainer" style="display: none;">
+                    <label for="viewerLotSelect">Lot :</label>
+                    <select id="viewerLotSelect" onchange="openViewer()"></select>
+                </div>
+                <div class="viewer-panel">
+                    <div id="viewerStatus" class="viewer-status"></div>
+                    <div id="viewerContainer"></div>
+                </div>
+            </div>
+
+            <div id="geoTabPanel" class="tab-panel">
+                <div id="geoMessage" class="geo-message"></div>
+                <div id="siteMap" class="site-map"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentAnalysisId = null;
+        let currentSiteLocation = null;
+        let currentLots = []; // [{name, folder, total_elements, valid_elements, carbon_total}]
+        let lotRowCounter = 0;
+        // Registre des corps d'état déclarés par le fichier Excel choisi
+        // ({code: nom}), récupéré via /corps_etat_registry dès que le
+        // fichier change -- null si l'Excel n'a pas d'onglet "Corps_Etat"
+        // (mode "règles partagées", pas de sélecteur pertinent à afficher).
+        let currentCorpsEtatRegistry = null;
+        let statusChart = null;
+        let floorChart = null;
+        let carbonByTypeChart = null;
+        let carbonByFloorChart = null;
+        let siteMap = null;
+        let siteMarker = null;
+
+        function corpsEtatSelectOptionsHtml() {
+            // "Auto" = repli sur la correspondance automatique existante
+            // (exact -> floue -> IA), exactement comme si rien n'était choisi.
+            let options = '<option value="">Auto</option>';
+            if (currentCorpsEtatRegistry) {
+                // escapeHtml() : code/nom viennent de l'onglet "Corps_Etat" du
+                // fichier Excel que l'utilisateur vient de choisir -- un
+                // fichier qu'il n'a pas forcément lui-même rédigé (reçu d'un
+                // tiers), donc pas une donnée de confiance.
+                for (const [code, nom] of Object.entries(currentCorpsEtatRegistry)) {
+                    options += `<option value="${escapeHtml(code)}">${escapeHtml(nom)}</option>`;
+                }
+            }
+            return options;
+        }
+
+        function addLotRow(prefillName) {
+            const i = lotRowCounter++;
+            const row = document.createElement('div');
+            row.className = 'lot-row';
+            row.id = `lotRow${i}`;
+            row.innerHTML = `
+                <input type="text" name="lot_name_${i}" placeholder="Nom du lot" value="${prefillName || ''}" required>
+                <input type="file" name="ifc_file_${i}" accept=".ifc" required>
+                <select name="corps_etat_${i}" title="Corps d'état (Auto = détection automatique à partir du nom du lot)">
+                    ${corpsEtatSelectOptionsHtml()}
+                </select>
+                <button type="button" onclick="removeLotRow(${i})">Retirer</button>
+            `;
+            document.getElementById('lotList').appendChild(row);
+        }
+
+        function removeLotRow(i) {
+            // Au moins une ligne de lot doit rester -- pas de suppression de
+            // la dernière (le formulaire exige au moins un fichier IFC).
+            const list = document.getElementById('lotList');
+            if (list.children.length <= 1) {
+                return;
+            }
+            document.getElementById(`lotRow${i}`)?.remove();
+        }
+
+        function refreshCorpsEtatSelectors() {
+            // Régénère les options de tous les sélecteurs déjà présents (les
+            // lots ajoutés après coup héritent directement du bon contenu via
+            // corpsEtatSelectOptionsHtml()), en conservant la sélection en
+            // cours quand le code choisi existe encore dans le nouveau registre.
+            document.querySelectorAll('#lotList select').forEach(select => {
+                const previousValue = select.value;
+                select.innerHTML = corpsEtatSelectOptionsHtml();
+                if ([...select.options].some(opt => opt.value === previousValue)) {
+                    select.value = previousValue;
+                }
+            });
+        }
+
+        document.getElementById('excel_file').addEventListener('change', function() {
+            const file = this.files[0];
+            currentCorpsEtatRegistry = null;
+            refreshCorpsEtatSelectors();
+            if (!file) {
+                return;
+            }
+            const formData = new FormData();
+            formData.append('excel_file', file);
+            fetch('/corps_etat_registry', { method: 'POST', body: formData })
+                .then(response => response.json())
+                .then(data => {
+                    currentCorpsEtatRegistry = data.registry || null;
+                    refreshCorpsEtatSelectors();
+                })
+                .catch(error => console.error('Error fetching corps d\'état registry:', error));
+        });
+
+        addLotRow('Lot 1');
+
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const loading = document.getElementById('loading');
+            const dashboard = document.getElementById('dashboard');
+            const downloadButton = document.getElementById('downloadButton');
+            
+            loading.style.display = 'block';
+            dashboard.style.display = 'none';
+            downloadButton.style.display = 'none';
+            
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => {
+                        throw new Error(err.error || 'Une erreur est survenue');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                loading.style.display = 'none';
+                dashboard.style.display = 'block';
+                downloadButton.style.display = 'block';
+                switchTab('results');
+
+                // Store the analysis ID
+                currentAnalysisId = data.analysis_id;
+
+                // Update statistics
+                updateCharts(data);
+
+                // L'analyse vient d'être enregistrée côté serveur (voir
+                // history.record_analysis dans /upload) -- on rafraîchit la
+                // liste pour qu'elle apparaisse immédiatement, sans recharger
+                // la page.
+                loadHistory();
+            })
+            .catch(error => {
+                loading.style.display = 'none';
+                alert(error.message || 'Une erreur est survenue lors de l\'analyse');
+                console.error('Error:', error);
+            });
+        });
+
+        function updateCharts(data) {
+            currentSiteLocation = data.site_location || null;
+            currentLots = data.lots || [];
+            updateLotComparisonTable(currentLots);
+            updateViewerLotSelector(currentLots);
+
+            // Mise à jour des statistiques
+            document.getElementById('totalElements').textContent = data.total_elements;
+            document.getElementById('validElements').textContent = data.valid_elements;
+            document.getElementById('missingElements').textContent = data.missing_elements;
+            document.getElementById('totalCarbonFootprint').textContent = Math.round(data.carbon_footprint.total).toLocaleString();
+            document.getElementById('anomalyCount').textContent = (data.anomalies || []).length;
+
+            const reliability = data.carbon_footprint.reliability_summary;
+            if (reliability) {
+                document.getElementById('carbonReliabilityBadge').textContent =
+                    `dont ${reliability.pct_mesure.toFixed(0)}% mesuré, ${reliability.pct_estime.toFixed(0)}% estimé, ` +
+                    `${reliability.pct_non_calculable.toFixed(0)}% non calculable`;
+            }
+
+            // Mise à jour des graphiques existants
+            updateStatusChart(data);
+            updateFloorChart(data.floors);
+
+            // Mise à jour des nouveaux graphiques d'empreinte carbone
+            updateCarbonByTypeChart(data.carbon_footprint.by_type);
+            updateCarbonByFloorChart(data.carbon_footprint.by_floor);
+
+            updateRecommendations(data.recommendations);
+        }
+
+        function updateLotComparisonTable(lots) {
+            const scrollWrapper = document.getElementById('lotComparisonScroll');
+            const body = document.getElementById('lotComparisonBody');
+            body.innerHTML = '';
+
+            if (!lots || lots.length === 0) {
+                scrollWrapper.style.display = 'none';
+                return;
+            }
+
+            scrollWrapper.style.display = 'block';
+            for (const lot of lots) {
+                const hasRules = lot.has_rules !== false;
+                const validRate = hasRules && lot.total_elements > 0 ? (lot.valid_elements / lot.total_elements * 100) : 0;
+                const row = document.createElement('tr');
+                // escapeHtml() : lot.name/corps_etat viennent du nom de lot
+                // saisi au formulaire et du registre Corps_Etat de l'Excel
+                // uploadé -- tous deux fournis par quiconque lance l'analyse,
+                // pas forcément la personne qui consulte ensuite le résultat.
+                row.innerHTML = `
+                    <td>${escapeHtml(lot.name)}</td>
+                    <td>${escapeHtml(lot.corps_etat || '')}</td>
+                    <td>${hasRules ? lot.total_elements.toLocaleString() : 'N/A'}</td>
+                    <td>${hasRules ? lot.valid_elements.toLocaleString() : 'N/A'}</td>
+                    <td>${hasRules ? validRate.toFixed(1) + '%' : 'N/A'}</td>
+                    <td>${Math.round(lot.carbon_total).toLocaleString()}</td>
+                `;
+                body.appendChild(row);
+            }
+        }
+
+        function updateViewerLotSelector(lots) {
+            const container = document.getElementById('viewerLotSelectorContainer');
+            const select = document.getElementById('viewerLotSelect');
+            select.innerHTML = '';
+
+            if (!lots || lots.length <= 1) {
+                container.style.display = 'none';
+                return;
+            }
+
+            container.style.display = 'block';
+            for (const lot of lots) {
+                const option = document.createElement('option');
+                option.value = lot.folder;
+                option.textContent = lot.name;
+                select.appendChild(option);
+            }
+        }
+
+        function bulletsToHtml(text) {
+            if (!text) return '';
+            // Convertit ligne par ligne : les lignes "-"/"*" deviennent des <li>
+            // regroupés en <ul>, les autres lignes (ex. l'intro rédigée par
+            // l'agent avant la liste chiffrée) deviennent des <p>. Ne jette rien,
+            // contrairement à l'ancienne version qui perdait tout texte hors liste
+            // dès qu'une seule puce était présente.
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            let html = '';
+            let inList = false;
+            for (const line of lines) {
+                const isBullet = line.startsWith('-') || line.startsWith('*');
+                // escapeHtml() : ce texte vient d'un LLM qui résume des faits
+                // eux-mêmes lus dans le fichier IFC uploadé (noms d'étage, de
+                // classe, de PSet...) -- donnée non fiable, jamais injectée
+                // telle quelle dans le DOM (XSS stocké sinon : un nom d'étage
+                // comme "<img src=x onerror=...>" repris tel quel par l'agent
+                // s'exécuterait chez quiconque consulte le rapport).
+                if (isBullet) {
+                    if (!inList) { html += '<ul>'; inList = true; }
+                    html += `<li>${escapeHtml(line.replace(/^[-*]\s*/, ''))}</li>`;
+                } else {
+                    if (inList) { html += '</ul>'; inList = false; }
+                    html += `<p>${escapeHtml(line)}</p>`;
+                }
+            }
+            if (inList) html += '</ul>';
+            return html;
+        }
+
+        function updateRecommendations(recommendations) {
+            const synthesisBox = document.getElementById('synthesisRecommendation');
+            const carbonBox = document.getElementById('carbonExpertBox');
+            const qualityBox = document.getElementById('dataQualityExpertBox');
+            const businessBox = document.getElementById('businessExpertBox');
+            const badge = document.getElementById('recommendationsBadge');
+
+            if (!recommendations || recommendations.degraded) {
+                const reason = (recommendations && recommendations.degraded_reason) || 'indisponibles';
+                const message = `<span class="recommendation-degraded">Préconisations IA non disponibles (${escapeHtml(reason)})</span>`;
+                synthesisBox.innerHTML = message;
+                carbonBox.innerHTML = message;
+                qualityBox.innerHTML = message;
+                businessBox.innerHTML = message;
+                badge.textContent = '';
+                return;
+            }
+
+            synthesisBox.innerHTML = bulletsToHtml(recommendations.synthesis);
+            carbonBox.innerHTML = bulletsToHtml(recommendations.carbon_expert);
+            qualityBox.innerHTML = bulletsToHtml(recommendations.data_quality_expert);
+            businessBox.innerHTML = bulletsToHtml(recommendations.business_expert);
+
+            const tiers = recommendations.tiers_used || {};
+            const tiersText = Object.entries(tiers).map(([step, tier]) => `${step}: ${tier}`).join(' · ');
+            badge.textContent = tiersText ? `Palier LLM utilisé — ${tiersText}` : '';
+        }
+
+        function updateStatusChart(data) {
+            const ctx = document.getElementById('statusChart').getContext('2d');
+            
+            if (statusChart) {
+                statusChart.destroy();
+            }
+            
+            const total = data.total_elements;
+            const valid = data.valid_elements;
+            const missingPsets = data.missing_psets;
+            const missingParams = data.missing_params;
+            
+            statusChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: [
+                        'Éléments valides',
+                        'PSet manquants',
+                        'Paramètres manquants'
+                    ],
+                    datasets: [{
+                        data: [
+                            valid,
+                            missingPsets,
+                            missingParams
+                        ],
+                        backgroundColor: [
+                            'rgba(75, 192, 192, 0.8)',  // Vert pour valides
+                            'rgba(255, 206, 86, 0.8)',  // Jaune pour PSet manquants
+                            'rgba(255, 99, 132, 0.8)'   // Rouge pour paramètres manquants
+                        ],
+                        borderColor: [
+                            'rgba(75, 192, 192, 1)',
+                            'rgba(255, 206, 86, 1)',
+                            'rgba(255, 99, 132, 1)'
+                        ],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateFloorChart(floorsData) {
+            const ctx = document.getElementById('floorChart').getContext('2d');
+            
+            if (floorChart) {
+                floorChart.destroy();
+            }
+            
+            // S'assurer que floorsData est un tableau
+            if (!Array.isArray(floorsData)) {
+                console.error('floorsData is not an array:', floorsData);
+                return;
+            }
+            
+            // Trier les étages
+            floorsData.sort((a, b) => {
+                if (!a || !b || (!a.floor && !a.name) || (!b.floor && !b.name)) {
+                    console.error('Invalid floor data:', a, '\n', b);
+                    return 0;
+                }
+                const aName = a.name || a.floor;
+                const bName = b.name || b.floor;
+                if (aName === 'Sans étage') return 1;
+                if (bName === 'Sans étage') return -1;
+                return aName.localeCompare(bName);
+            });
+            
+            const labels = floorsData.map(f => f.name || f.floor || 'Sans étage');
+            const validData = floorsData.map(f => f.valid);
+            const invalidData = floorsData.map(f => f.invalid);
+            const totalData = floorsData.map(f => f.valid + f.invalid);
+            
+            floorChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Total éléments',
+                        data: totalData,
+                        backgroundColor: 'rgba(200, 200, 200, 0.3)',
+                        borderColor: 'rgba(200, 200, 200, 0.5)',
+                        borderWidth: 1,
+                        stack: 'total'
+                    }, {
+                        label: 'Éléments valides',
+                        data: validData,
+                        backgroundColor: 'rgba(75, 192, 192, 0.8)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1,
+                        stack: 'details'
+                    }, {
+                        label: 'Éléments invalides',
+                        data: invalidData,
+                        backgroundColor: 'rgba(255, 99, 132, 0.8)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1,
+                        stack: 'details'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            stacked: true,
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        },
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Répartition par étage',
+                            color: '#FFFFFF',
+                            font: {
+                                size: 16
+                            }
+                        },
+                        legend: {
+                            labels: {
+                                color: '#FFFFFF'
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                afterBody: function(tooltipItems) {
+                                    const idx = tooltipItems[0].dataIndex;
+                                    const total = totalData[idx];
+                                    const valid = validData[idx];
+                                    const validPercent = ((valid / total) * 100).toFixed(1);
+                                    return [
+                                        '',
+                                        `Taux de validité: ${validPercent}%`
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateCarbonByTypeChart(carbonData) {
+            const ctx = document.getElementById('carbonByTypeChart').getContext('2d');
+            const labels = Object.keys(carbonData);
+            const values = Object.values(carbonData);
+
+            if (carbonByTypeChart) {
+                carbonByTypeChart.destroy();
+            }
+
+            carbonByTypeChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Empreinte carbone par type (kg CO2e)',
+                        data: values,
+                        backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateCarbonByFloorChart(carbonData) {
+            const ctx = document.getElementById('carbonByFloorChart').getContext('2d');
+            const labels = Object.keys(carbonData);
+            const values = Object.values(carbonData);
+
+            if (carbonByFloorChart) {
+                carbonByFloorChart.destroy();
+            }
+
+            carbonByFloorChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Empreinte carbone par étage (kg CO2e)',
+                        data: values,
+                        backgroundColor: 'rgba(153, 102, 255, 0.6)',
+                        borderColor: 'rgba(153, 102, 255, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#FFFFFF'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function downloadReport() {
+            if (!currentAnalysisId) {
+                alert('Aucune analyse en cours');
+                return;
+            }
+            window.location.href = `/download/${currentAnalysisId}`;
+        }
+
+        // --- Visionneuse 3D ---
+        // Chargée à la demande (import dynamique) : @thatopen/components et le
+        // binaire web-ifc.wasm ne sont téléchargés qu'au premier clic sur
+        // "Voir la maquette 3D", pas au chargement initial de la page.
+        let viewer = null; // { components, world, fragments, ifcLoader, loadedKey } -- loadedKey = "<analysisId>::<lotFolder>"
+
+        async function initViewer() {
+            const OBC = await import("@thatopen/components");
+
+            const components = new OBC.Components();
+            const worlds = components.get(OBC.Worlds);
+            const world = worlds.create();
+            world.scene = new OBC.SimpleScene(components);
+            world.scene.setup();
+            world.scene.three.background = null;
+
+            const container = document.getElementById('viewerContainer');
+            world.renderer = new OBC.SimpleRenderer(components, container);
+            world.camera = new OBC.OrthoPerspectiveCamera(components);
+            await world.camera.controls.setLookAt(50, 50, 50, 0, 0, 0);
+
+            components.init();
+            components.get(OBC.Grids).create(world);
+
+            // Le chargeur IFC convertit le fichier en "Fragments" (format optimisé
+            // pour le rendu) via un worker -- l'API interne "cache" à chaque appel,
+            // pas de réutilisation entre analyses pour ce premier jet.
+            const workerUrl = await OBC.FragmentsManager.getWorker();
+            const fragments = components.get(OBC.FragmentsManager);
+            fragments.init(workerUrl);
+            fragments.list.onItemSet.add(({ value: loadedModel }) => {
+                loadedModel.useCamera(world.camera.three);
+                world.scene.three.add(loadedModel.object);
+                if (fragments.core && typeof fragments.core.update === 'function') {
+                    fragments.core.update(true);
+                }
+            });
+
+            const ifcLoader = components.get(OBC.IfcLoader);
+            await ifcLoader.setup({
+                autoSetWasm: false,
+                wasm: { path: "https://unpkg.com/web-ifc@0.0.77/", absolute: true },
+            });
+
+            return { components, world, fragments, ifcLoader, loadedKey: null };
+        }
+
+        function switchTab(tab) {
+            ['results', 'viewer', 'geo'].forEach(name => {
+                document.getElementById(name + 'TabButton').classList.toggle('active', name === tab);
+                document.getElementById(name + 'TabPanel').classList.toggle('active', name === tab);
+            });
+
+            if (tab === 'results') {
+                // Chart.js calcule la taille du canvas au moment où il est créé --
+                // si l'onglet Résultats était masqué, un resize() force le recalcul
+                // maintenant qu'il redevient visible.
+                [statusChart, floorChart, carbonByTypeChart, carbonByFloorChart].forEach(chart => {
+                    if (chart) chart.resize();
+                });
+            } else if (tab === 'viewer') {
+                openViewer();
+            } else if (tab === 'geo') {
+                showSiteMap();
+            }
+        }
+
+        function showSiteMap() {
+            const message = document.getElementById('geoMessage');
+            const mapEl = document.getElementById('siteMap');
+
+            if (!currentSiteLocation) {
+                message.textContent = "Aucune coordonnée de site trouvée dans ce modèle IFC (IfcSite.RefLatitude/RefLongitude non renseignées).";
+                message.style.display = 'block';
+                mapEl.style.display = 'none';
+                return;
+            }
+
+            message.style.display = 'none';
+            mapEl.style.display = 'block';
+
+            const { latitude, longitude, name, elevation } = currentSiteLocation;
+
+            if (!siteMap) {
+                siteMap = L.map('siteMap').setView([latitude, longitude], 17);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                    maxZoom: 19,
+                }).addTo(siteMap);
+                siteMarker = L.marker([latitude, longitude]).addTo(siteMap);
+            } else {
+                siteMap.setView([latitude, longitude], 17);
+                siteMarker.setLatLng([latitude, longitude]);
+            }
+
+            const elevationText = elevation != null ? `, altitude ${elevation.toFixed(1)} m` : '';
+            siteMarker.bindPopup(`<strong>${name}</strong><br>${latitude.toFixed(5)}, ${longitude.toFixed(5)}${elevationText}`).openPopup();
+
+            // Comme Chart.js, Leaflet calcule la taille de la carte à la création --
+            // si le conteneur était masqué (onglet inactif), invalidateSize() force
+            // le recalcul maintenant qu'il redevient visible.
+            setTimeout(() => siteMap.invalidateSize(), 0);
+        }
+
+        function currentViewerLotFolder() {
+            const select = document.getElementById('viewerLotSelect');
+            if (select && select.value) {
+                return select.value;
+            }
+            return currentLots.length > 0 ? currentLots[0].folder : null;
+        }
+
+        async function openViewer() {
+            const lotFolder = currentViewerLotFolder();
+            if (!currentAnalysisId || !lotFolder) {
+                return;
+            }
+            const loadedKey = `${currentAnalysisId}::${lotFolder}`;
+
+            const status = document.getElementById('viewerStatus');
+            status.textContent = 'Chargement de la visionneuse...';
+
+            try {
+                // Changement d'analyse ou de lot : on repart d'une scène neuve
+                // plutôt que de gérer le retrait fin du modèle précédent (pas
+                // nécessaire pour ce premier jet -- un utilisateur bascule
+                // rarement plusieurs fois entre lots dans la même session).
+                if (viewer && viewer.loadedKey !== null && viewer.loadedKey !== loadedKey) {
+                    if (typeof viewer.components.dispose === 'function') {
+                        try { viewer.components.dispose(); } catch (e) { console.warn('viewer dispose failed', e); }
+                    }
+                    document.getElementById('viewerContainer').innerHTML = '';
+                    viewer = null;
+                }
+
+                if (!viewer) {
+                    viewer = await initViewer();
+                }
+
+                if (viewer.loadedKey === loadedKey) {
+                    status.textContent = '';
+                    return;
+                }
+
+                status.textContent = 'Téléchargement du modèle IFC...';
+                const res = await fetch(`/model/${currentAnalysisId}/${lotFolder}`);
+                if (!res.ok) {
+                    throw new Error('Modèle IFC introuvable pour ce lot');
+                }
+                const buffer = new Uint8Array(await res.arrayBuffer());
+
+                status.textContent = `Conversion du modèle (${(buffer.length / 1e6).toFixed(1)} Mo)...`;
+                await viewer.ifcLoader.load(buffer, false, loadedKey, {
+                    processData: {
+                        progressCallback: (progress) => {
+                            status.textContent = `Conversion du modèle... ${Math.round(progress * 100)}%`;
+                        },
+                    },
+                });
+                viewer.loadedKey = loadedKey;
+                status.textContent = '';
+            } catch (err) {
+                console.error('Erreur visionneuse 3D:', err);
+                status.textContent = 'Erreur : ' + err.message;
+            }
+        }
+
+        function escapeHtml(str) {
+            return String(str).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        }
+
+        function formatDateTime(isoString) {
+            return new Date(isoString).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+        }
+
+        let historyCache = [];
+        let historyTrendChart = null;
+
+        function loadHistory() {
+            fetch('/history')
+                .then(response => response.json())
+                .then(data => {
+                    historyCache = data.analyses || [];
+                    renderHistoryTable();
+                    renderCompareSelectors();
+                })
+                .catch(error => console.error('Error loading history:', error));
+        }
+
+        function updateHistoryTrendChart() {
+            const container = document.getElementById('historyTrendContainer');
+            if (historyCache.length < 2) {
+                // Une courbe de tendance n'a de sens qu'à partir de deux
+                // points -- avec une seule analyse, le tableau suffit.
+                container.style.display = 'none';
+                return;
+            }
+            container.style.display = 'block';
+
+            // historyCache est trié du plus récent au plus ancien (voir
+            // history.list_analyses) -- on inverse pour une courbe
+            // chronologique gauche -> droite.
+            const chronological = [...historyCache].reverse();
+            const labels = chronological.map(a => formatDateTime(a.timestamp));
+            const rates = chronological.map(a => a.validation_rate != null ? Math.round(a.validation_rate * 10) / 10 : null);
+            const anomalyCounts = chronological.map(a => a.anomaly_count);
+
+            const ctx = document.getElementById('historyTrendChart').getContext('2d');
+            if (historyTrendChart) {
+                historyTrendChart.destroy();
+            }
+            historyTrendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Taux de validité (%)',
+                        data: rates,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.15)',
+                        yAxisID: 'y',
+                        tension: 0.2,
+                        fill: true,
+                    }, {
+                        label: 'Anomalies ouvertes',
+                        data: anomalyCounts,
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.15)',
+                        yAxisID: 'y1',
+                        tension: 0.2,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    scales: {
+                        y: {
+                            position: 'left',
+                            beginAtZero: true,
+                            max: 100,
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: { color: '#ccc' },
+                        },
+                        y1: {
+                            position: 'right',
+                            beginAtZero: true,
+                            grid: { display: false },
+                            ticks: { color: '#ccc' },
+                        },
+                        x: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: '#ccc' },
+                        },
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#ccc' } },
+                    },
+                },
+            });
+        }
+
+        function renderHistoryTable() {
+            const empty = document.getElementById('historyEmpty');
+            const scroll = document.getElementById('historyScroll');
+            const comparePanel = document.getElementById('comparePanel');
+            const body = document.getElementById('historyBody');
+
+            if (historyCache.length === 0) {
+                empty.style.display = 'block';
+                scroll.style.display = 'none';
+                comparePanel.style.display = 'none';
+                document.getElementById('historyTrendContainer').style.display = 'none';
+                return;
+            }
+            empty.style.display = 'none';
+            scroll.style.display = 'block';
+            comparePanel.style.display = historyCache.length >= 2 ? 'block' : 'none';
+            updateHistoryTrendChart();
+
+            body.innerHTML = historyCache.map(a => {
+                const lotsStr = (a.lots || []).map(l => escapeHtml(l.name)).join(', ');
+                const rate = a.validation_rate != null ? a.validation_rate.toFixed(1) + '%' : 'N/A';
+                const carbon = a.carbon_total != null ? Math.round(a.carbon_total).toLocaleString() : '-';
+                return `<tr>
+                    <td>${formatDateTime(a.timestamp)}</td>
+                    <td>${escapeHtml(a.label)}</td>
+                    <td>${lotsStr}</td>
+                    <td>${rate}</td>
+                    <td>${a.anomaly_count}</td>
+                    <td>${carbon}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function renderCompareSelectors() {
+            const beforeSelect = document.getElementById('compareBefore');
+            const afterSelect = document.getElementById('compareAfter');
+            const optionsHtml = historyCache.map(a =>
+                `<option value="${a.id}">${formatDateTime(a.timestamp)} -- ${escapeHtml(a.label)}</option>`
+            ).join('');
+            beforeSelect.innerHTML = optionsHtml;
+            afterSelect.innerHTML = optionsHtml;
+            // Par défaut : comparer les deux analyses les plus récentes
+            // (l'historique est trié du plus récent au plus ancien côté
+            // serveur) -- "après" = la plus récente, "avant" = la précédente.
+            if (historyCache.length >= 2) {
+                afterSelect.value = historyCache[0].id;
+                beforeSelect.value = historyCache[1].id;
+            }
+        }
+
+        function runComparison() {
+            const beforeId = document.getElementById('compareBefore').value;
+            const afterId = document.getElementById('compareAfter').value;
+            const resultEl = document.getElementById('compareResult');
+            if (!beforeId || !afterId) {
+                return;
+            }
+            if (beforeId === afterId) {
+                resultEl.innerHTML = '<p class="history-empty">Choisis deux analyses différentes.</p>';
+                return;
+            }
+            resultEl.innerHTML = '<p class="history-empty">Comparaison en cours...</p>';
+            fetch(`/compare/${beforeId}/${afterId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(err => { throw new Error(err.error || 'Erreur'); });
+                    }
+                    return response.json();
+                })
+                .then(data => renderComparison(data))
+                .catch(error => {
+                    resultEl.innerHTML = `<p class="history-empty">Erreur : ${escapeHtml(error.message)}</p>`;
+                });
+        }
+
+        function renderComparison(data) {
+            const { before, after, diff } = data;
+            const resultEl = document.getElementById('compareResult');
+
+            const rateBefore = before.validation_rate != null ? before.validation_rate.toFixed(1) + '%' : 'N/A';
+            const rateAfter = after.validation_rate != null ? after.validation_rate.toFixed(1) + '%' : 'N/A';
+            const carbonDelta = (after.carbon_total || 0) - (before.carbon_total || 0);
+
+            let html = `<div class="compare-summary">
+                <div class="compare-stat resolved">${diff.resolved.length} anomalie(s) corrigée(s)</div>
+                <div class="compare-stat new">${diff.new.length} nouvelle(s) anomalie(s)</div>
+                <div class="compare-stat persistent">${diff.persistent.length} anomalie(s) persistante(s)</div>
+            </div>
+            <p>Taux de validité : ${rateBefore} &rarr; ${rateAfter}. Empreinte carbone : ${carbonDelta >= 0 ? '+' : ''}${Math.round(carbonDelta).toLocaleString()} kg CO2e.</p>`;
+
+            const groups = [
+                { key: 'resolved', label: 'Anomalies corrigées', rows: diff.resolved, extraCol: null },
+                { key: 'new', label: 'Nouvelles anomalies', rows: diff.new, extraCol: null },
+                { key: 'persistent', label: 'Anomalies persistantes', rows: diff.persistent, extraCol: 'count_before' },
+            ];
+            for (const group of groups) {
+                if (group.rows.length === 0) continue;
+                html += `<div class="anomaly-group ${group.key}">
+                    <h4>${group.label} (${group.rows.length})</h4>
+                    <table class="anomaly-list">
+                        <thead><tr><th>Lot</th><th>Étage</th><th>Classe IFC</th><th>PSet</th><th>Nb éléments</th>${group.extraCol ? '<th>Avant</th>' : ''}</tr></thead>
+                        <tbody>${group.rows.map(a => `<tr>
+                            <td>${escapeHtml(a.lot_name)}</td>
+                            <td>${escapeHtml(a.floor)}</td>
+                            <td>${escapeHtml(a.ifc_class)}</td>
+                            <td>${escapeHtml(a.pset_name)}</td>
+                            <td>${a.count}</td>
+                            ${group.extraCol ? `<td>${a[group.extraCol]}</td>` : ''}
+                        </tr>`).join('')}</tbody>
+                    </table>
+                </div>`;
+            }
+            resultEl.innerHTML = html;
+        }
+
+        loadHistory();
+    </script>
+</body>
+</html>

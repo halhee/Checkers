@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  checkers:
+    build: .
+    ports:
+      - "5050:8080"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_APP=Checkers.py
+    # Préconisations IA (voir .env.example) : ENABLE_AI_RECOMMENDATIONS=false
+    # par défaut dans l'image. Pour les activer, décommenter et ajuster :
+    # env_file: .env
+    # Un OLLAMA_BASE_URL=http://localhost:11434 dans .env ne fonctionnera pas
+    # depuis le conteneur -- utiliser http://host.docker.internal:11434, ou
+    # ajouter un service `ollama` (image ollama/ollama) à ce fichier.
