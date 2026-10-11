@@ -1,0 +1,114 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+    <info>
+        <title>Exemple d'exigences d'information -- Checkers</title>
+        <version>1.0</version>
+        <description>IDS d'exemple fourni avec Checkers : à adapter aux exigences réelles du projet.</description>
+        <author>checkers@example.com</author>
+        <date>2026-10-11</date>
+        <purpose>Recette des maquettes IFC (portes, murs, dalles, espaces)</purpose>
+        <milestone>DCE</milestone>
+    </info>
+    <specifications>
+        <specification name="Portes -- résistance au feu renseignée" ifcVersion="IFC2X3 IFC4" identifier="PORTES-FEU" description="Toute porte doit porter son degré de résistance au feu." instructions="Renseigner Pset_DoorCommon.FireRating dans la maquette.">
+            <applicability minOccurs="0" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCDOOR</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <property dataType="IFCLABEL" cardinality="required">
+                    <propertySet>
+                        <simpleValue>Pset_DoorCommon</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>FireRating</simpleValue>
+                    </baseName>
+                </property>
+            </requirements>
+        </specification>
+        <specification name="Portes -- caractère extérieur renseigné" ifcVersion="IFC2X3 IFC4" identifier="PORTES-EXT" description="Toute porte doit indiquer si elle est extérieure." instructions="Renseigner Pset_DoorCommon.IsExternal.">
+            <applicability minOccurs="0" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCDOOR</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <property dataType="IFCBOOLEAN" cardinality="required">
+                    <propertySet>
+                        <simpleValue>Pset_DoorCommon</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>IsExternal</simpleValue>
+                    </baseName>
+                </property>
+            </requirements>
+        </specification>
+        <specification name="Murs -- porteur et extérieur renseignés" ifcVersion="IFC2X3 IFC4" identifier="MURS-BASE" description="Tout mur doit indiquer s'il est porteur et s'il est extérieur." instructions="Renseigner Pset_WallCommon.LoadBearing et Pset_WallCommon.IsExternal.">
+            <applicability minOccurs="0" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCWALL</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <property dataType="IFCBOOLEAN" cardinality="required">
+                    <propertySet>
+                        <simpleValue>Pset_WallCommon</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>LoadBearing</simpleValue>
+                    </baseName>
+                </property>
+                <property dataType="IFCBOOLEAN" cardinality="required">
+                    <propertySet>
+                        <simpleValue>Pset_WallCommon</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>IsExternal</simpleValue>
+                    </baseName>
+                </property>
+            </requirements>
+        </specification>
+        <specification name="Dalles -- performance acoustique renseignée" ifcVersion="IFC2X3 IFC4" identifier="DALLES-ACOU" description="Toute dalle doit porter son indice d'affaiblissement acoustique." instructions="Renseigner Pset_SlabCommon.AcousticRating.">
+            <applicability minOccurs="0" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCSLAB</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <property dataType="IFCLABEL" cardinality="required">
+                    <propertySet>
+                        <simpleValue>Pset_SlabCommon</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>AcousticRating</simpleValue>
+                    </baseName>
+                </property>
+            </requirements>
+        </specification>
+        <specification name="Espaces -- nom renseigné" ifcVersion="IFC2X3 IFC4" identifier="ESPACES-NOM" description="Tout espace doit être nommé." instructions="Renseigner l'attribut Name de chaque IfcSpace.">
+            <applicability minOccurs="0" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCSPACE</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <attribute cardinality="required">
+                    <name>
+                        <simpleValue>Name</simpleValue>
+                    </name>
+                </attribute>
+            </requirements>
+        </specification>
+    </specifications>
+</ids>

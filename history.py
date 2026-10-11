@@ -78,6 +78,11 @@ def record_analysis(analysis_id: str, label: str, excel_filename: str, results: 
     total = results["total_elements"]
     valid = results["valid_elements"]
     validation_rate = (valid / total * 100) if total else None
+    # Analyse sans règles PSet (IDS seul) : le taux de conformité IDS tient
+    # lieu de taux de validité, sinon la courbe de tendance reste vide.
+    ids_summary = results.get("ids")
+    if validation_rate is None and ids_summary and ids_summary.get("global_pass_rate") is not None:
+        validation_rate = ids_summary["global_pass_rate"] * 100
 
     conn = _connect()
     conn.execute(

@@ -18,3 +18,7 @@ ifcopenshell==0.8.5
 gunicorn==26.1.0
 crewai[anthropic]==1.15.17
 rapidfuzz==3.14.5
+# Contrôle IDS (voir ids_check.py). Doit rester sur la même version que
+# ifcopenshell : ifctester 0.9.x appelle des méthodes absentes d'ifcopenshell
+# 0.8.x (AttributeError sur les facettes « attribut ») -- constaté en test.
+ifctester==0.8.5

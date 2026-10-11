@@ -23,3 +23,18 @@ def excel_safe(value):
     if isinstance(value, str) and value.startswith(_DANGEROUS_PREFIXES):
         return "'" + value
     return value
+
+
+def neutralize_formulas(workbook) -> int:
+    """Repasse sur tout le classeur et force en texte toute cellule restée
+    « formule » (`data_type == 'f'`). À appeler juste avant `save()` : les
+    rapports Checkers ne contiennent aucune formule volontaire. Retourne le
+    nombre de cellules neutralisées."""
+    count = 0
+    for worksheet in workbook.worksheets:
+        for row in worksheet.iter_rows():
+            for cell in row:
+                if cell.data_type == 'f':
+                    cell.data_type = 's'
+                    count += 1
+    return count

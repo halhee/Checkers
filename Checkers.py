@@ -11,7 +11,7 @@ from collections import defaultdict, Counter
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, NamedStyle
 from openpyxl.utils import get_column_letter
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import shutil
 import re
 import zipfile
@@ -24,7 +24,8 @@ import carbon
 import site_location
 import corps_etat
 import history
-from excel_safety import excel_safe
+import ids_check
+from excel_safety import excel_safe, neutralize_formulas
 from agents.recommendations import run_recommendations_pipeline, create_recommendations_sheet
 from agents.lot_matching import match_lot_with_ai
 
@@ -72,7 +73,7 @@ for folder in [UPLOAD_FOLDER, TEMP_FOLDER]:
 
 history.init_db()
 
-ALLOWED_EXTENSIONS = {'ifc', 'xlsx'}
+ALLOWED_EXTENSIONS = {'ifc', 'xlsx', 'ids'}
 
 # Identifiant d'analyse = uuid4 utilisé à la fois comme nom de dossier sur
 # disque (TEMP_FOLDER/<id>/...) et comme clé SQLite -- validé dans toutes les
@@ -84,8 +85,12 @@ _ANALYSIS_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
 def _valid_analysis_id(analysis_id: str) -> bool:
     return bool(_ANALYSIS_ID_RE.match(analysis_id))
 
-def allowed_file(filename: str) -> bool:
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def allowed_file(filename: str, extensions=None) -> bool:
+    """`extensions` : jeu d'extensions autorisées pour CE champ (ex. {'ifc'}) ;
+    par défaut tout ce que l'app sait lire. Chaque champ d'upload doit passer
+    le sien -- un .xlsx n'a rien à faire dans un champ IFC."""
+    allowed = ALLOWED_EXTENSIONS if extensions is None else extensions
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed
 
 # Durée de conservation des dossiers d'analyse sur le serveur (fichiers
 # envoyés + rapport généré) -- les fichiers IFC/Excel uploadés peuvent
@@ -550,7 +555,23 @@ def _lot_verdict(valid_rate: float) -> str:
     return "Rejeté"
 
 
-def create_recette_sheet(workbook, label: str, timestamp_str: str, excel_filename: str,
+_VERDICT_SEVERITY = {"Validé": 0, "Validé avec réserves": 1, "Rejeté": 2}
+
+
+def _ids_lot_verdict(ids_result) -> Optional[str]:
+    """Verdict d'un lot d'après son contrôle IDS (None si pas de contrôle
+    exploitable : pas d'IDS fourni, erreur, ou aucune spécification visant
+    la version IFC du modèle)."""
+    if not ids_result or ids_result.get("error") or not ids_result.get("specs_checked"):
+        return None
+    if ids_result["cardinality_failures"]:
+        return "Rejeté"  # spécification obligatoire sans aucun élément concerné
+    if ids_result["pass_rate"] is None:
+        return "Validé" if ids_result["specs_failed"] == 0 else "Rejeté"
+    return _lot_verdict(ids_result["pass_rate"])
+
+
+def create_recette_sheet(workbook, label: str, timestamp_str: str, rules_description: str,
                           lots_summary: list, anomalies_raw: list):
     """Onglet Excel "Fiche de Recette" : le livrable attendu d'une recette
     fonctionnelle (verdict par lot, liste des anomalies ouvertes regroupées
@@ -595,11 +616,11 @@ def create_recette_sheet(workbook, label: str, timestamp_str: str, excel_filenam
     r += 1
     r = merged_title(r, f"Projet / repère : {label}", normal_font, None)
     r = merged_title(r, f"Date d'analyse : {timestamp_str}", normal_font, None)
-    r = merged_title(r, f"Référentiel de règles (Excel) : {excel_filename}", normal_font, None)
+    r = merged_title(r, f"Référentiel de règles : {rules_description}", normal_font, None)
     r += 1
 
     r = merged_title(r, "1. Verdict par lot (corps d'état)", section_font, section_fill)
-    headers = ["Lot", "Corps d'état détecté", "Taux de validité", "Verdict"]
+    headers = ["Lot", "Corps d'état détecté", "Taux de validité (PSet)", "Conformité IDS", "Verdict"]
     for col, h in enumerate(headers, 1):
         cell = sheet.cell(row=r, column=col)
         cell.value = h
@@ -608,23 +629,46 @@ def create_recette_sheet(workbook, label: str, timestamp_str: str, excel_filenam
         cell.alignment = center
         cell.border = border
     r += 1
+    verdict_fills = {"Validé": ok_fill, "Validé avec réserves": reserve_fill, "Rejeté": ko_fill}
     for lot in lots_summary:
         total = lot["total_elements"]
         valid = lot["valid_elements"]
-        has_rules = lot["has_rules"]
-        if has_rules and total:
-            valid_rate = valid / total
-            verdict = _lot_verdict(valid_rate)
-            fill = {"Validé": ok_fill, "Validé avec réserves": reserve_fill, "Rejeté": ko_fill}[verdict]
-            rate_display, rate_format = valid_rate, '0.0%'
+        ids_result = lot.get("ids")
+
+        verdicts = []
+        if lot["has_rules"] and total:
+            pset_rate = valid / total
+            verdicts.append(_lot_verdict(pset_rate))
+            pset_display, pset_format = pset_rate, '0.0%'
+        else:
+            pset_display, pset_format = "N/A", None
+
+        ids_verdict = _ids_lot_verdict(ids_result)
+        if ids_result is None:
+            ids_display, ids_format = "—", None
+        elif ids_result.get("error"):
+            ids_display, ids_format = "Erreur", None
+        elif ids_result.get("pass_rate") is not None:
+            ids_display, ids_format = ids_result["pass_rate"], '0.0%'
+        else:
+            ids_display, ids_format = "N/A", None
+        if ids_verdict:
+            verdicts.append(ids_verdict)
+
+        if verdicts:
+            verdict = max(verdicts, key=lambda v: _VERDICT_SEVERITY[v])
+            fill = verdict_fills[verdict]
+        elif ids_result is not None:
+            verdict = "Contrôle IDS non concluant"
+            fill = None
         else:
             verdict = "Bilan carbone seul (pas de contrôle PSet)"
             fill = None
-            rate_display, rate_format = "N/A", None
         row_cells = [
             (lot["name"], left, None, None),
             (lot["corps_etat"], left, None, None),
-            (rate_display, center, rate_format, None),
+            (pset_display, center, pset_format, None),
+            (ids_display, center, ids_format, None),
             (verdict, center, None, fill),
         ]
         for col, (value, alignment, number_format, cell_fill) in enumerate(row_cells, 1):
@@ -706,7 +750,8 @@ def _write_detail_row(details, row: int, cells, col_widths: list):
             col_widths[col - 1] = length
 
 
-def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_path: str, label: str = None):
+def process_files(temp_dir: str, lots: list, excel_file_path: Optional[str], output_file_path: str,
+                  label: str = None, ids_file_path: Optional[str] = None, ids_filename: Optional[str] = None):
     """`lots` = liste de `(lot_name, ifc_file_path, explicit_corps_etat_code)`,
     au moins un élément. `explicit_corps_etat_code` est None si l'utilisateur
     a laissé "Auto" côté dashboard -- la correspondance automatique (exact,
@@ -714,23 +759,38 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
     l'ajout du sélecteur explicite. Un seul fichier Excel de paramètres
     requis, partagé par tous les lots. `label` est le repère libre affiché
     dans l'historique et la Fiche de Recette (voir history.py) -- par défaut
-    le nom du fichier Excel si l'utilisateur n'en a pas saisi."""
+    le nom du fichier de règles si l'utilisateur n'en a pas saisi.
+
+    Au moins un référentiel est fourni : `excel_file_path` (règles PSet) et/ou
+    `ids_file_path` (Information Delivery Specification, voir ids_check.py),
+    partagé par tous les lots comme l'Excel. Sans Excel, les lots passent par
+    le chemin « bilan carbone + IDS » (aucun contrôle PSet Excel)."""
     start_time = time.time()
     print(f"Starting analysis...")
     analysis_timestamp = datetime.now()
-    excel_filename = os.path.basename(excel_file_path)
-    label = label or excel_filename
+    excel_filename = os.path.basename(excel_file_path) if excel_file_path else None
+    rules_filename = excel_filename or ids_filename or (os.path.basename(ids_file_path) if ids_file_path else "")
+    label = label or rules_filename
+
+    # Contrôle IDS : le document est chargé (et validé) une seule fois ; il est
+    # revalidé contre chaque lot (ifctester réinitialise son état à chaque
+    # appel, vérifié par test -- voir ids_check.validate_lot).
+    ids_document = ids_check.load_ids(ids_file_path) if ids_file_path else None
+    ids_results = {}   # {lot_name: résultat de ids_check.validate_lot}
 
     # Chargement des règles : un seul jeu partagé par tous les lots (mode
     # historique), ou un jeu par lot si l'Excel déclare un onglet
     # "Corps_Etat" -- voir corps_etat.py. Sans onglet "Corps_Etat", le
     # fichier est traité exactement comme avant ce chantier.
-    corps_etat_registry = corps_etat.load_registry(excel_file_path)
+    corps_etat_registry = corps_etat.load_registry(excel_file_path) if excel_file_path else None
     # {lot_name: (element_types | None, required_psets_and_params | None, description)}
     # element_types=None signifie "aucune règle pour ce lot" : bilan carbone
     # seul, sans contrôle PSet (décision utilisateur -- jamais bloquant).
     lot_rules = {}
-    if corps_etat_registry is None:
+    if excel_file_path is None:
+        for lot_name, _, _ in lots:
+            lot_rules[lot_name] = (None, None, "IDS uniquement")
+    elif corps_etat_registry is None:
         shared_element_types = load_element_types(excel_file_path)
         shared_required_psets = load_required_psets_and_params(excel_file_path)
         for lot_name, _, _ in lots:
@@ -828,6 +888,24 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
             site_coords = site_location.get_site_location(ifc_file)
         lot_classes = elements_by_class_by_lot.setdefault(lot_name, {})
         lot_element_types, lot_required_psets, lot_match_info = lot_rules[lot_name]
+
+        if ids_document is not None:
+            # Un échec du contrôle IDS d'un lot (modèle atypique, bug de la
+            # bibliothèque...) n'interrompt pas le reste de l'analyse : il est
+            # consigné dans le rapport, pas avalé.
+            try:
+                ids_results[lot_name] = ids_check.validate_lot(
+                    ids_document, ifc_file,
+                    floor_of=lambda element, _ifc=ifc_file: get_building_storey(_ifc, element),
+                )
+                for group in ids_results[lot_name]["groups"]:
+                    missing_combo_counts[(
+                        lot_name, group["floor"], group["ifc_class"],
+                        ids_check.anomaly_label(group["specification"]),
+                    )] += group["count"]
+            except Exception as exc:
+                print(f"IDS check failed for lot '{lot_name}': {exc}")
+                ids_results[lot_name] = ids_check.error_result("contrôle IDS impossible sur ce modèle")
 
         for element in ifc_file.by_type('IfcProduct'):
             if lot_element_types is not None and element.is_a() in lot_element_types:
@@ -1018,6 +1096,7 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
             "carbon_total": carbon_facts["by_lot"].get(lot_name, 0),
             "corps_etat": lot_rules[lot_name][2],
             "has_rules": lot_rules[lot_name][0] is not None,
+            "ids": ids_check.public_summary(ids_results[lot_name]) if lot_name in ids_results else None,
         })
 
     # Anomalies = non-conformités agrégées par (lot, étage, classe IFC, PSet)
@@ -1028,8 +1107,19 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
         {"lot": lot_name, "floor": floor, "ifc_class": ifc_class, "pset": pset, "count": count}
         for (lot_name, floor, ifc_class, pset), count in missing_combo_counts.items()
     ]
+    ids_title = ""
+    if ids_document is not None:
+        ids_title = (getattr(ids_document, "info", None) or {}).get("title", "") or ""
+        ids_check.create_ids_sheet(workbook, ids_title, ids_filename or os.path.basename(ids_file_path), ids_results)
+
+    rules_description = " + ".join(
+        part for part in (
+            f"Excel « {excel_filename} »" if excel_filename else None,
+            f"IDS « {ids_filename or os.path.basename(ids_file_path)} »" if ids_document is not None else None,
+        ) if part
+    )
     create_recette_sheet(workbook, label, analysis_timestamp.strftime("%d/%m/%Y %H:%M"),
-                          excel_filename, lots_summary, anomalies_raw)
+                          rules_description, lots_summary, anomalies_raw)
 
     # Largeurs de colonnes de l'onglet Détails : déjà calculées à la volée
     # pendant l'écriture (voir _write_detail_row) pour éviter de relire les
@@ -1039,8 +1129,8 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
 
     # Ajuster les largeurs des colonnes des autres onglets
     for ws in workbook.worksheets:
-        if ws is details:
-            continue
+        if ws is details or ws.title in ("IDS", "Fiche de Recette"):
+            continue  # largeurs déjà fixées explicitement (bandeaux fusionnés très longs)
         for column in ws.columns:
             max_length = 0
             for cell in column:
@@ -1055,6 +1145,15 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
     # Figer les volets dans l'onglet de détails
     details.freeze_panes = 'A2'
     
+    # Filet de sécurité : le rapport ne contient aucune formule volontaire ;
+    # toute cellule restée « formule » vient forcément d'un fichier envoyé
+    # (nom d'élément, d'étage, de PSet...). Doublon volontaire avec
+    # excel_safe() à l'écriture : ici on couvre aussi un futur point
+    # d'écriture qui aurait oublié de l'appeler.
+    neutralized = neutralize_formulas(workbook)
+    if neutralized:
+        print(f"Formules neutralisées dans le rapport : {neutralized}")
+
     # Sauvegarder le fichier
     print(f"Saving file... ({time.time() - start_time:.2f}s)")
     workbook.save(output_file_path)
@@ -1073,6 +1172,15 @@ def process_files(temp_dir: str, lots: list, excel_file_path: str, output_file_p
         "floors": [{"name": floor, "valid": stats["valid"], "invalid": stats["invalid"]} for floor, stats in sorted_floors],
         "lots": lots_summary,
         "anomalies": anomalies_raw,
+        "ids": {
+            "filename": ids_filename or os.path.basename(ids_file_path),
+            "title": ids_title,
+            "global_pass_rate": (
+                (sum(r["applicable_total"] - r["failed_total"] for r in ids_results.values() if not r["error"])
+                 / sum(r["applicable_total"] for r in ids_results.values() if not r["error"]))
+                if any(r["applicable_total"] for r in ids_results.values() if not r["error"]) else None
+            ),
+        } if ids_document is not None else None,
         "carbon_footprint": {
             "total": carbon_facts["total"],
             "by_type": carbon_facts["by_type"],
@@ -1106,7 +1214,7 @@ def corps_etat_registry_route():
         if 'excel_file' not in request.files:
             return jsonify({"error": "Missing Excel file"}), 400
         excel_file = request.files['excel_file']
-        if excel_file.filename == '' or not allowed_file(excel_file.filename):
+        if excel_file.filename == '' or not allowed_file(excel_file.filename, {'xlsx'}):
             return jsonify({"error": "Invalid Excel file"}), 400
 
         fd, tmp_path = tempfile.mkstemp(suffix='.xlsx')
@@ -1130,14 +1238,23 @@ def corps_etat_registry_route():
 def upload():
     try:
         print("Starting upload...")
-        if 'excel_file' not in request.files:
-            print("Missing Excel file in request")
-            return jsonify({"error": "Missing Excel file"}), 400
+        # Référentiel de règles : Excel (PSet) et/ou IDS -- au moins un des deux.
+        excel_file = request.files.get('excel_file')
+        if excel_file is not None and excel_file.filename == '':
+            excel_file = None
+        ids_file = request.files.get('ids_file')
+        if ids_file is not None and ids_file.filename == '':
+            ids_file = None
 
-        excel_file = request.files['excel_file']
-        if excel_file.filename == '' or not allowed_file(excel_file.filename):
+        if excel_file is None and ids_file is None:
+            print("No rules file in request")
+            return jsonify({"error": "Fournir au moins un fichier de règles (Excel et/ou IDS)"}), 400
+        if excel_file is not None and not allowed_file(excel_file.filename, {'xlsx'}):
             print("Invalid Excel file")
             return jsonify({"error": "Invalid Excel file"}), 400
+        if ids_file is not None and not allowed_file(ids_file.filename, {'ids'}):
+            print("Invalid IDS file")
+            return jsonify({"error": "Invalid IDS file (extension .ids attendue)"}), 400
 
         # Collecte des lots : champs indexés lot_name_N/ifc_file_N -- au moins
         # un lot requis. Un seul fichier Excel de paramètres requis, partagé
@@ -1160,7 +1277,7 @@ def upload():
             # puis floue, puis IA en dernier recours).
             explicit_code = request.form.get(f'corps_etat_{i}', '').strip() or None
             if ifc_file.filename != '':
-                if not allowed_file(ifc_file.filename):
+                if not allowed_file(ifc_file.filename, {'ifc'}):
                     print(f"Invalid file type for lot '{lot_name}'")
                     return jsonify({"error": f"Invalid file type for lot '{lot_name}'"}), 400
                 lot_uploads.append((lot_name, ifc_file, i, explicit_code))
@@ -1169,7 +1286,7 @@ def upload():
             print("No IFC file in request")
             return jsonify({"error": "No IFC file provided"}), 400
 
-        print(f"Received {len(lot_uploads)} lot(s), Excel={excel_file.filename}")
+        print(f"Received {len(lot_uploads)} lot(s), Excel={excel_file.filename if excel_file else None}, IDS={ids_file.filename if ids_file else None}")
 
         # Purge les analyses précédentes plus vieilles que la rétention avant
         # d'en créer une nouvelle -- évite d'accumuler indéfiniment des
@@ -1187,20 +1304,43 @@ def upload():
             print(f"Error creating analysis directory: {str(e)}")
             return jsonify({"error": f"Could not create analysis directory: {str(e)}"}), 500
 
-        excel_path = os.path.join(analysis_dir, secure_filename(excel_file.filename))
-        try:
-            excel_file.save(excel_path)
-        except Exception as e:
-            print(f"Error saving Excel file: {str(e)}")
-            shutil.rmtree(analysis_dir, ignore_errors=True)
-            return jsonify({"error": f"Could not save Excel file: {str(e)}"}), 500
+        excel_path = None
+        if excel_file is not None:
+            excel_path = os.path.join(analysis_dir, secure_filename(excel_file.filename))
+            try:
+                excel_file.save(excel_path)
+            except Exception as e:
+                print(f"Error saving Excel file: {str(e)}")
+                shutil.rmtree(analysis_dir, ignore_errors=True)
+                return jsonify({"error": f"Could not save Excel file: {str(e)}"}), 500
 
-        try:
-            _reject_if_zip_bomb(excel_path)
-        except ValueError as e:
-            print(f"Rejected Excel file: {str(e)}")
-            shutil.rmtree(analysis_dir, ignore_errors=True)
-            return jsonify({"error": str(e)}), 400
+            try:
+                _reject_if_zip_bomb(excel_path)
+            except ValueError as e:
+                print(f"Rejected Excel file: {str(e)}")
+                shutil.rmtree(analysis_dir, ignore_errors=True)
+                return jsonify({"error": str(e)}), 400
+
+        ids_path = None
+        if ids_file is not None:
+            # Nom fixe côté disque : le nom d'origine n'est conservé que pour
+            # l'affichage (secure_filename ne protège pas d'un nom vide).
+            ids_path = os.path.join(analysis_dir, 'regles.ids')
+            try:
+                ids_file.save(ids_path)
+            except Exception as e:
+                print(f"Error saving IDS file: {str(e)}")
+                shutil.rmtree(analysis_dir, ignore_errors=True)
+                return jsonify({"error": f"Could not save IDS file: {str(e)}"}), 500
+
+            # Validation anticipée (sécurité + schéma) : un IDS refusé doit
+            # l'être avant de lancer une analyse longue, avec un message clair.
+            try:
+                ids_check.load_ids(ids_path)
+            except ids_check.IdsFileError as e:
+                print(f"Rejected IDS file: {str(e)}")
+                shutil.rmtree(analysis_dir, ignore_errors=True)
+                return jsonify({"error": str(e)}), 400
 
         # Un sous-dossier par lot (évite les collisions de nom de fichier
         # entre lots) ; "folder" est renvoyé au frontend pour cibler la
@@ -1229,13 +1369,16 @@ def upload():
         # Analyser les fichiers
         print("Starting analysis...")
         try:
-            results = process_files(analysis_dir, lots, excel_path, output_path, label=label)
+            ids_display_name = secure_filename(ids_file.filename) if ids_file is not None else None
+            results = process_files(analysis_dir, lots, excel_path, output_path, label=label,
+                                    ids_file_path=ids_path, ids_filename=ids_display_name)
             for lot_summary, folder in zip(results["lots"], lot_folders):
                 lot_summary["folder"] = folder
             results["analysis_id"] = analysis_id
             print("Analysis completed successfully")
             try:
-                history.record_analysis(analysis_id, results["label"], excel_file.filename, results, results["anomalies"])
+                rules_filename = excel_file.filename if excel_file is not None else ids_file.filename
+                history.record_analysis(analysis_id, results["label"], rules_filename, results, results["anomalies"])
             except Exception as e:
                 # L'historique est un bonus (tableau de bord d'exploitation) --
                 # un échec de persistance ne doit jamais invalider une analyse
@@ -1245,10 +1388,12 @@ def upload():
             # terminée (contrairement aux IFC par lot, encore nécessaires à la
             # visionneuse 3D via /model/<analysis_id>/<lot_folder>) -- inutile
             # de le garder sur disque.
-            try:
-                os.remove(excel_path)
-            except OSError:
-                pass
+            for rules_path in (excel_path, ids_path):
+                if rules_path:
+                    try:
+                        os.remove(rules_path)
+                    except OSError:
+                        pass
             return jsonify(results)
         except Exception as e:
             print(f"Error during analysis: {str(e)}")

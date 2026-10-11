@@ -326,6 +326,19 @@
             border-radius: 4px;
             color: #FFFFFF;
         }
+        .ids-section {
+            margin-top: 30px;
+        }
+        .ids-section h3 {
+            font-size: 1rem;
+            color: #ccc;
+            margin-bottom: 6px;
+        }
+        .ids-meta {
+            color: #aaa;
+            font-size: 0.85rem;
+            margin: 0 0 10px;
+        }
         .history-section {
             margin-top: 30px;
             margin-bottom: 30px;
@@ -456,13 +469,18 @@
             </div>
 
             <div class="form-group">
-                <label for="excel_file">Fichier Excel (paramètres requis, partagé par tous les lots)</label>
-                <input type="file" id="excel_file" name="excel_file" accept=".xlsx" required>
+                <label for="excel_file">Fichier Excel (paramètres requis PSet, partagé par tous les lots -- optionnel si un IDS est fourni)</label>
+                <input type="file" id="excel_file" name="excel_file" accept=".xlsx">
+            </div>
+
+            <div class="form-group">
+                <label for="ids_file">Fichier IDS (Information Delivery Specification, buildingSMART -- optionnel si un Excel est fourni)</label>
+                <input type="file" id="ids_file" name="ids_file" accept=".ids">
             </div>
 
             <div class="form-group">
                 <label for="analysis_label">Repère (optionnel -- ex. nom du projet/chantier, affiché dans l'historique et la Fiche de Recette)</label>
-                <input type="text" id="analysis_label" name="analysis_label" placeholder="Par défaut : nom du fichier Excel">
+                <input type="text" id="analysis_label" name="analysis_label" placeholder="Par défaut : nom du fichier de règles">
             </div>
 
             <button type="submit" class="btn-primary">Analyser</button>
@@ -550,11 +568,33 @@
                                 <th>Total éléments</th>
                                 <th>Valides</th>
                                 <th>Taux de validité</th>
+                                <th>Conformité IDS</th>
                                 <th>Empreinte carbone (kg CO2e)</th>
                             </tr>
                         </thead>
                         <tbody id="lotComparisonBody"></tbody>
                     </table>
+                </div>
+
+                <div class="ids-section" id="idsSection" style="display: none;">
+                    <h3>Conformité IDS</h3>
+                    <p class="ids-meta" id="idsMeta"></p>
+                    <div class="lot-comparison-scroll">
+                        <table class="lot-comparison-table">
+                            <thead>
+                                <tr>
+                                    <th>Lot</th>
+                                    <th>Spécification</th>
+                                    <th>Cardinalité</th>
+                                    <th>Statut</th>
+                                    <th>Applicables</th>
+                                    <th>Non conformes</th>
+                                    <th>Exigences non respectées</th>
+                                </tr>
+                            </thead>
+                            <tbody id="idsBody"></tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <div class="charts-container">
@@ -758,6 +798,7 @@
             currentSiteLocation = data.site_location || null;
             currentLots = data.lots || [];
             updateLotComparisonTable(currentLots);
+            updateIdsSection(data);
             updateViewerLotSelector(currentLots);
 
             // Mise à jour des statistiques
@@ -810,9 +851,68 @@
                     <td>${hasRules ? lot.total_elements.toLocaleString() : 'N/A'}</td>
                     <td>${hasRules ? lot.valid_elements.toLocaleString() : 'N/A'}</td>
                     <td>${hasRules ? validRate.toFixed(1) + '%' : 'N/A'}</td>
+                    <td>${idsRateLabel(lot.ids)}</td>
                     <td>${Math.round(lot.carbon_total).toLocaleString()}</td>
                 `;
                 body.appendChild(row);
+            }
+        }
+
+        function idsRateLabel(ids) {
+            if (!ids) return '—';
+            if (ids.error) return 'Erreur';
+            if (ids.pass_rate === null || ids.pass_rate === undefined) return 'N/A';
+            return (ids.pass_rate * 100).toFixed(1) + '%';
+        }
+
+        const IDS_STATUS_LABELS = {
+            conforme: 'Conforme',
+            non_conforme: 'Non conforme',
+            ignoree: 'Ignorée (autre version IFC)',
+        };
+        const IDS_CARDINALITY_LABELS = {required: 'Obligatoire', optional: 'Facultative', prohibited: 'Interdite'};
+
+        function updateIdsSection(data) {
+            const section = document.getElementById('idsSection');
+            const body = document.getElementById('idsBody');
+            body.innerHTML = '';
+            const lots = (data.lots || []).filter(lot => lot.ids);
+            if (!data.ids || lots.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = 'block';
+            // Toutes les chaînes viennent du fichier IDS et des modèles
+            // uploadés : échappées avant injection dans le DOM.
+            const globalRate = (data.ids.global_pass_rate === null || data.ids.global_pass_rate === undefined)
+                ? 'N/A' : (data.ids.global_pass_rate * 100).toFixed(1) + '%';
+            document.getElementById('idsMeta').innerHTML =
+                `Fichier : ${escapeHtml(data.ids.filename)}` +
+                (data.ids.title ? ` — ${escapeHtml(data.ids.title)}` : '') +
+                ` — conformité globale : ${globalRate}`;
+
+            for (const lot of lots) {
+                if (lot.ids.error) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `<td>${escapeHtml(lot.name)}</td>` +
+                        `<td colspan="6">Contrôle IDS impossible : ${escapeHtml(lot.ids.error)}</td>`;
+                    body.appendChild(row);
+                    continue;
+                }
+                for (const spec of lot.ids.specifications) {
+                    const failedReqs = spec.requirements.filter(q => !q.status).map(q => q.description).join(' ; ');
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${escapeHtml(lot.name)}</td>
+                        <td>${escapeHtml(spec.name)}</td>
+                        <td>${escapeHtml(IDS_CARDINALITY_LABELS[spec.cardinality] || spec.cardinality)}</td>
+                        <td>${escapeHtml(IDS_STATUS_LABELS[spec.status] || spec.status)}</td>
+                        <td>${Number(spec.applicable).toLocaleString()}</td>
+                        <td>${Number(spec.failed).toLocaleString()}</td>
+                        <td>${escapeHtml(failedReqs)}</td>
+                    `;
+                    body.appendChild(row);
+                }
             }
         }
 

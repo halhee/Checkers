@@ -9,7 +9,7 @@ Checkers est une application web permettant de valider des fichiers IFC (Industr
 ## Fonctionnalités
 
 - Upload de plusieurs fichiers IFC (un par lot/discipline -- Architecture, Structure, CVC...), analysés ensemble et comparés
-- Validation automatique des PSet et paramètres
+- Validation automatique des PSet et paramètres (fichier Excel) **et/ou** contrôle d'un fichier **IDS** (Information Delivery Specification, standard buildingSMART -- voir `ids_check.py`)
 - Dashboard interactif avec statistiques en temps réel
 - Graphique en donut pour la visualisation des résultats
 - Bilan carbone basé sur les matériaux réels du modèle IFC (voir `carbon.py`), avec indicateur de fiabilité (mesuré / estimé / non calculable)
@@ -32,6 +32,20 @@ Par défaut, tous les lots sont validés contre le **même** fichier Excel de pa
 À chaque analyse, le nom du lot saisi à l'upload est automatiquement associé à un corps d'état -- correspondance exacte, puis floue (`rapidfuzz`), puis un agent IA en dernier recours si c'est ambigu (choix strictement limité aux corps d'état déclarés, jamais d'invention). Si rien ne correspond avec confiance, le lot est quand même inclus dans le bilan carbone (sur tous ses éléments) mais **sans contrôle PSet**, avec un avertissement clair dans le rapport plutôt qu'un blocage. Sans onglet `Corps_Etat` dans le fichier, comportement inchangé (un seul jeu de règles partagé).
 
 Dès que le fichier Excel choisi déclare un onglet `Corps_Etat`, un petit sélecteur apparaît à côté de chaque lot pour choisir explicitement son corps d'état (peuplé via la route `/corps_etat_registry`, appelée automatiquement au choix du fichier). Laissé sur "Auto" (par défaut), le pipeline de correspondance automatique ci-dessus s'applique comme d'habitude ; un choix explicite le court-circuite entièrement pour ce lot (visible dans le rapport comme "... (choix manuel)").
+
+## Contrôle IDS (Information Delivery Specification)
+
+L'IDS est le format ouvert buildingSMART pour exprimer ce qu'un modèle IFC doit contenir (classes, PSet, propriétés, attributs, valeurs). C'est l'équivalent normalisé de l'Excel de règles : on peut fournir **l'un, l'autre, ou les deux** (au moins un). Le contrôle s'appuie sur `ifctester`, le validateur de référence d'IfcOpenShell.
+
+- Un seul fichier IDS, partagé par tous les lots (comme l'Excel). Un exemple (`exemple_ids.ids`) est fourni à la racine.
+- **IDS seul** : les lots passent par le chemin « bilan carbone + IDS » (aucun contrôle PSet Excel) ; le verdict de recette vient de la conformité IDS. **Excel + IDS** : le verdict d'un lot est le plus sévère des deux.
+- Les spécifications dont la version IFC (`ifcVersion`) ne vise pas le modèle sont **ignorées** (comportement normatif), pas comptées en échec.
+- Les non-conformités IDS sont des anomalies comme les autres (regroupées par lot/étage/classe IFC/spécification, libellé `IDS : <nom>`) : elles alimentent l'historique, la comparaison avant/après, la Fiche de Recette et les agents IA.
+- Résultats : section « Conformité IDS » du dashboard, colonne dans le tableau des lots, et onglet Excel **IDS** (synthèse par spécification + détail élément par élément, plafonné à 5 000 lignes par lot ; les compteurs restent exacts).
+
+Le fichier IDS est traité comme **non fiable** (il vient souvent d'un tiers) : refus de toute déclaration `DOCTYPE`/`ENTITY` (XXE, expansion d'entités), UTF-8 obligatoire, 10 Mo maximum, validation XSD stricte, rejet des motifs regex à quantificateurs imbriqués ou trop longs (heuristique anti-ReDoS : elle écarte la forme classique du blocage mais ne prétend pas être exhaustive).
+
+**Version** : `ifctester` doit rester alignée sur `ifcopenshell` (0.8.5 ↔ 0.8.5) ; la 0.9.x appelle des méthodes absentes d'IfcOpenShell 0.8.x.
 
 ## Recette fonctionnelle, anomalies et historique
 
@@ -91,6 +105,8 @@ L'application sera accessible à l'adresse : http://localhost:8080
 ├── site_location.py      # Géoréférencement du site (IfcSite.RefLatitude/RefLongitude)
 ├── corps_etat.py         # Registre des corps d'état et correspondance lot -> discipline
 ├── history.py            # Historique persistant des analyses + comparaison (anomalies)
+├── ids_check.py          # Contrôle IDS (ifctester) : chargement sécurisé, validation par lot, onglet Excel
+├── excel_safety.py       # Neutralisation de l'injection de formule dans les rapports Excel
 ├── agents/               # Préconisations par agents IA (CrewAI, optionnel)
 ├── Dockerfile           # Configuration Docker
 ├── docker-compose.yml   # Configuration Docker Compose
