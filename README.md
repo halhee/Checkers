@@ -49,7 +49,7 @@ Le fichier IDS est traité comme **non fiable** (il vient souvent d'un tiers) : 
 
 ## Recette fonctionnelle, anomalies et historique
 
-Chaque analyse génère, en plus des onglets existants, un onglet Excel **"Fiche de Recette"** : verdict par lot (Validé / Validé avec réserves / Rejeté, selon le taux de validité -- seuils indicatifs réglables dans `Checkers.py::VERDICT_THRESHOLD_OK`/`VERDICT_THRESHOLD_RESERVE`), la liste des anomalies ouvertes, et une zone de signature (testeur/date/visa) -- le document attendu à l'issue d'une recette, prêt à imprimer ou transmettre tel quel.
+Chaque analyse génère, en plus des onglets existants, un onglet Excel **"Fiche de Recette"** : verdict par lot (Validé / Validé avec réserves / Rejeté, selon le taux de validité -- seuils indicatifs réglables dans `checkers_core/analysis.py::VERDICT_THRESHOLD_OK`/`VERDICT_THRESHOLD_RESERVE`), la liste des anomalies ouvertes, et une zone de signature (testeur/date/visa) -- le document attendu à l'issue d'une recette, prêt à imprimer ou transmettre tel quel.
 
 Une **anomalie** est une non-conformité agrégée par (lot, étage, classe IFC, PSet) -- pas par élément individuel : à l'échelle réelle (des centaines d'éléments concernés par une même règle manquante), énumérer chaque élément rend le suivi illisible ; le détail reste disponible dans l'onglet "Détails" pour qui veut descendre au niveau de l'élément.
 
@@ -76,6 +76,10 @@ En Docker, Ollama ne tourne pas dans le conteneur Checkers : `OLLAMA_BASE_URL` d
 
 Sur Vercel (serverless), CrewAI + Ollama local ne fonctionnent pas (pas de process persistant, pas d'accès à un Ollama local) -- `ENABLE_AI_RECOMMENDATIONS=false` est configuré par défaut dans `vercel.json`. Le bilan carbone corrigé, lui, fonctionne normalement sur Vercel (pur Python, sans dépendance lourde supplémentaire).
 
+## Extension Bonsai (Blender)
+
+Le moteur d'analyse est aussi disponible directement dans [Bonsai](https://bonsaibim.org/) (Blender), sur le modèle IFC ouvert, sans export ni serveur : panneau **Checkers** dans la barre latérale de la vue 3D. Mêmes règles Excel, même IDS, même bilan carbone et même rapport Excel que l'application web ; en plus, chaque anomalie se sélectionne en un clic dans la maquette, et le modèle peut être coloré conforme / non conforme. Voir [`bonsai_extension/README.md`](bonsai_extension/README.md).
+
 ## Prérequis
 
 - Docker
@@ -100,7 +104,9 @@ L'application sera accessible à l'adresse : http://localhost:8080
 
 ```
 .
-├── Checkers.py           # Application Flask principale
+├── Checkers.py           # Application Flask principale (routes)
+├── checkers_core/        # Moteur d'analyse sans Flask (process_files, règles Excel, onglets du rapport)
+├── bonsai_extension/     # Extension Bonsai/Blender (panneau Checkers) + script de build
 ├── carbon.py             # Bilan carbone (matériaux réels, facteurs, onglet Excel)
 ├── site_location.py      # Géoréférencement du site (IfcSite.RefLatitude/RefLongitude)
 ├── corps_etat.py         # Registre des corps d'état et correspondance lot -> discipline

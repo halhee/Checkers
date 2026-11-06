@@ -134,6 +134,7 @@ def validate_lot(ids_document, ifc_file, floor_of: Optional[Callable] = None) ->
 
     specifications = []
     groups = Counter()          # (spec_name, floor, ifc_class) -> nb d'éléments distincts
+    group_guids = {}            # même clé -> GlobalId concernés (sélection dans Bonsai)
     details = []
     details_truncated = False
     applicable_total = 0
@@ -172,7 +173,9 @@ def validate_lot(ids_document, ifc_file, floor_of: Optional[Callable] = None) ->
                     failure_rows.append((failure["element"], str(failure["reason"]), description))
 
         for element in failed_entities:
-            groups[(spec.name, floor(element), element.is_a())] += 1
+            key = (spec.name, floor(element), element.is_a())
+            groups[key] += 1
+            group_guids.setdefault(key, []).append(getattr(element, "GlobalId", None))
 
         for element, reason, description in failure_rows:
             if len(details) >= MAX_DETAIL_ROWS_PER_LOT:
@@ -226,7 +229,8 @@ def validate_lot(ids_document, ifc_file, floor_of: Optional[Callable] = None) ->
         "failed_total": failed_total,
         "pass_rate": pass_rate,
         "groups": [
-            {"specification": spec_name, "floor": floor_name, "ifc_class": ifc_class, "count": count}
+            {"specification": spec_name, "floor": floor_name, "ifc_class": ifc_class, "count": count,
+             "guids": [g for g in group_guids.get((spec_name, floor_name, ifc_class), []) if g]}
             for (spec_name, floor_name, ifc_class), count in groups.items()
         ],
         "details": details,

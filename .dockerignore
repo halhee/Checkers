@@ -43,3 +43,6 @@ docker-compose.yml
 # Système
 .DS_Store
 Thumbs.db
+
+# Extension Bonsai (inutile dans l image web)
+bonsai_extension/

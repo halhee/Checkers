@@ -53,13 +53,19 @@ def match_lot_name(lot_name: str, registry: dict) -> tuple:
     "ambigu" signifie : pas de correspondance déterministe fiable -- à
     l'appelant de décider entre un recours IA (agents/lot_matching.py) et
     l'absence de contrôle PSet pour ce lot."""
-    from rapidfuzz import fuzz, process
-
     normalized_lot = _normalize(lot_name)
 
     for code, nom in registry.items():
         if _normalize(nom) == normalized_lot or _normalize(code) == normalized_lot:
             return code, "exact"
+
+    try:
+        from rapidfuzz import fuzz, process
+    except ImportError:
+        # rapidfuzz n'est pas fourni par Bonsai : dans Blender, sans lui,
+        # seule la correspondance exacte est tentée (le choix explicite du
+        # corps d'état reste possible dans le panneau Checkers).
+        return None, "ambigu"
 
     choices = {code: _normalize(nom) for code, nom in registry.items()}
     match = process.extractOne(normalized_lot, choices, scorer=fuzz.token_sort_ratio)

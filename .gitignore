@@ -69,3 +69,7 @@ __MACOSX/
 # IDE
 .vscode/
 .idea/
+
+# Extension Bonsai : générés par bonsai_extension/build.py
+bonsai_extension/checkers_bonsai/lib/
+bonsai_extension/dist/
