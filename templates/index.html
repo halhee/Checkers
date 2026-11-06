@@ -3,24 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <title>Checkers - Validation IFC</title>
-    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
-    <!-- Version figée + intégrité (SRI) : empêche l'exécution de JS modifié
-         si jsdelivr est un jour compromis -- un CDN non versionné/non vérifié
-         est un point d'entrée supply-chain classique. -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
-    <!-- Carte du site (onglet Géoréférencement) -- Leaflet + fond OpenStreetMap,
-         pas de clé API requise. -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+    {#- Bibliothèques front résolues par offline_config.resolve_assets() :
+        copie locale (static/vendor/, voir scripts/vendor_assets.py) si
+        installée, sinon CDN -- sauf en mode hors ligne (CHECKERS_OFFLINE),
+        où une bibliothèque absente est désactivée plutôt que chargée
+        depuis Internet. Empreinte SRI conservée dans les deux cas : le
+        navigateur refuse un fichier modifié, local ou distant. -#}
+    {%- macro sri(asset) -%}
+        {%- if asset.integrity %} integrity="{{ asset.integrity }}"{% if not asset.local %} crossorigin="anonymous"{% endif %}{% endif -%}
+    {%- endmacro %}
+    {% if assets.bootstrap_css %}<link rel="stylesheet" href="{{ assets.bootstrap_css.url }}"{{ sri(assets.bootstrap_css) }}>{% endif %}
+    {% if assets.chartjs %}<script src="{{ assets.chartjs.url }}"{{ sri(assets.chartjs) }}></script>{% endif %}
+    <!-- Carte du site (onglet Géoréférencement) -- Leaflet ; fond de carte
+         choisi côté serveur (offline_config.map_config). -->
+    {% if assets.leaflet_css %}<link rel="stylesheet" href="{{ assets.leaflet_css.url }}"{{ sri(assets.leaflet_css) }}>{% endif %}
+    {% if assets.leaflet_js %}<script src="{{ assets.leaflet_js.url }}"{{ sri(assets.leaflet_js) }}></script>{% endif %}
     <!-- Visionneuse 3D (chargée à la demande, voir openViewer()) -- versions figées
          volontairement, écosystème qui bouge vite. web-ifc-viewer/web-ifc-three sont
          dépréciés, @thatopen/components est le successeur maintenu. -->
+    {% if viewer_config.enabled %}
     <script type="importmap">
     {
         "imports": {
-            "@thatopen/components": "https://cdn.jsdelivr.net/npm/@thatopen/components@3.4.8/+esm"
+            "@thatopen/components": {{ assets.viewer_module.url|tojson }}
         }
     }
+    </script>
+    {% endif %}
+    <script>
+        // Configuration transmise par le serveur (offline_config.py).
+        const CHECKERS_OFFLINE = {{ offline|tojson }};
+        const VIEWER_CONFIG = {{ viewer_config|tojson }};
+        const MAP_CONFIG = {{ map_config|tojson }};
+        // Chart.js indisponible (mode hors ligne sans copie locale) : objet
+        // de remplacement inerte, pour que le tableau de bord (chiffres,
+        // tableaux) s'affiche quand même, sans les graphiques.
+        if (typeof window.Chart === 'undefined') {
+            window.CHARTS_DISABLED = true;
+            window.Chart = class { constructor() {} destroy() {} resize() {} update() {} };
+        }
     </script>
     <style>
         body {
@@ -121,8 +142,19 @@
             font-size: 1.2rem;
             color: #FFFFFF;
         }
+        .offline-banner {
+            background: #2d3b2d;
+            border-left: 4px solid #6c6;
+            color: #dfd;
+            padding: 8px 14px;
+            margin: 10px 20px;
+            font-size: 0.9rem;
+        }
         #downloadButton, #bcfButton {
             display: none;
+        }
+        #bcfButton {
+            margin-top: 8px;
         }
         #dashboard {
             display: none;
@@ -457,6 +489,12 @@
     </style>
 </head>
 <body>
+    {% if offline %}
+    <div class="offline-banner">Mode hors ligne : aucune connexion à Internet n'est utilisée par cette page.
+        {%- if not assets.chartjs %} Graphiques désactivés (Chart.js non installé localement).{% endif %}
+        {%- if not viewer_config.enabled %} Visionneuse 3D désactivée (non installée localement).{% endif %}
+    </div>
+    {% endif %}
     <div class="container">
         <img class="logo" src="{{ url_for('static', filename='checkers.png') }}" alt="Checkers Logo">
         <h1>Checkers - Validation IFC</h1>
@@ -1304,7 +1342,9 @@
             // Le chargeur IFC convertit le fichier en "Fragments" (format optimisé
             // pour le rendu) via un worker -- l'API interne "cache" à chaque appel,
             // pas de réutilisation entre analyses pour ce premier jet.
-            const workerUrl = await OBC.FragmentsManager.getWorker();
+            // Worker local si installé (mode hors ligne) ; sinon getWorker(),
+            // qui le télécharge depuis unpkg.
+            const workerUrl = VIEWER_CONFIG.worker_url || await OBC.FragmentsManager.getWorker();
             const fragments = components.get(OBC.FragmentsManager);
             fragments.init(workerUrl);
             fragments.list.onItemSet.add(({ value: loadedModel }) => {
@@ -1318,7 +1358,7 @@
             const ifcLoader = components.get(OBC.IfcLoader);
             await ifcLoader.setup({
                 autoSetWasm: false,
-                wasm: { path: "https://unpkg.com/web-ifc@0.0.77/", absolute: true },
+                wasm: { path: VIEWER_CONFIG.wasm_path, absolute: true },
             });
 
             return { components, world, fragments, ifcLoader, loadedKey: null };
@@ -1355,17 +1395,38 @@
                 return;
             }
 
-            message.style.display = 'none';
-            mapEl.style.display = 'block';
-
             const { latitude, longitude, name, elevation } = currentSiteLocation;
+            const coordsText = `${name} : ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+                + (elevation != null ? `, altitude ${elevation.toFixed(1)} m` : '');
+
+            if (typeof L === 'undefined') {
+                // Leaflet non installé localement (mode hors ligne) : les
+                // coordonnées restent affichées, sans carte.
+                message.textContent = `${coordsText} (carte désactivée : Leaflet non installé localement)`;
+                message.style.display = 'block';
+                mapEl.style.display = 'none';
+                return;
+            }
+
+            if (MAP_CONFIG.tile_url) {
+                message.style.display = 'none';
+            } else {
+                // Aucun fond de carte en mode hors ligne sans serveur de tuiles
+                // interne (MAP_TILE_URL) : un fond externe recevrait les
+                // coordonnées du site.
+                message.textContent = `${coordsText} -- fond de carte désactivé en mode hors ligne (serveur de tuiles interne configurable via MAP_TILE_URL).`;
+                message.style.display = 'block';
+            }
+            mapEl.style.display = 'block';
 
             if (!siteMap) {
                 siteMap = L.map('siteMap').setView([latitude, longitude], 17);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                    maxZoom: 19,
-                }).addTo(siteMap);
+                if (MAP_CONFIG.tile_url) {
+                    L.tileLayer(MAP_CONFIG.tile_url, {
+                        attribution: MAP_CONFIG.attribution,
+                        maxZoom: 19,
+                    }).addTo(siteMap);
+                }
                 siteMarker = L.marker([latitude, longitude]).addTo(siteMap);
             } else {
                 siteMap.setView([latitude, longitude], 17);
@@ -1397,6 +1458,11 @@
             const loadedKey = `${currentAnalysisId}::${lotFolder}`;
 
             const status = document.getElementById('viewerStatus');
+            if (!VIEWER_CONFIG.enabled) {
+                status.textContent = 'Visionneuse 3D désactivée en mode hors ligne : ses bibliothèques ne sont pas '
+                    + 'installées sur ce serveur (voir scripts/vendor_assets.py --viewer).';
+                return;
+            }
             status.textContent = 'Chargement de la visionneuse...';
 
             try {

@@ -15,6 +15,12 @@ import ids_check
 
 load_dotenv()
 
+# Mode hors ligne (CHECKERS_OFFLINE, voir offline_config.py) : lu après
+# load_dotenv() pour pouvoir être activé depuis .env, et appliqué avant
+# tout import de CrewAI (coupure de la télémétrie).
+import offline_config
+offline_config.apply_process_environment()
+
 # Le moteur d'analyse (process_files, règles Excel, onglets du rapport) vit
 # dans checkers_core/analysis.py, sans dépendance à Flask, pour être
 # réutilisable depuis l'extension Bonsai (voir bonsai_extension/).
@@ -38,6 +44,13 @@ def _set_security_headers(response):
     response.headers.setdefault('X-Content-Type-Options', 'nosniff')
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'same-origin')
+    if offline_config.OFFLINE:
+        # Garantie côté navigateur : toute requête vers une autre origine
+        # que ce serveur (et le serveur de tuiles interne éventuel) est
+        # bloquée, même si une URL externe subsistait dans la page.
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            offline_config.content_security_policy(offline_config.map_config()["tile_url"]))
     return response
 
 
@@ -66,6 +79,7 @@ for folder in [UPLOAD_FOLDER, TEMP_FOLDER]:
             print(f"Error creating folder {folder}: {str(e)}")
 
 history.init_db()
+print(offline_config.startup_report())
 
 ALLOWED_EXTENSIONS = {'ifc', 'xlsx', 'ids'}
 
@@ -143,7 +157,14 @@ def _reject_if_zip_bomb(file_path: str):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    assets = offline_config.resolve_assets(lambda path: url_for('static', filename=path))
+    return render_template(
+        'index.html',
+        offline=offline_config.OFFLINE,
+        assets=assets,
+        viewer_config=offline_config.viewer_config(assets),
+        map_config=offline_config.map_config(),
+    )
 
 @app.route('/corps_etat_registry', methods=['POST'])
 def corps_etat_registry_route():

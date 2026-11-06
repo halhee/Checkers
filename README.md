@@ -81,6 +81,31 @@ Sur Vercel (serverless), CrewAI + Ollama local ne fonctionnent pas (pas de proce
 
 Le moteur d'analyse est aussi disponible directement dans [Bonsai](https://bonsaibim.org/) (Blender), sur le modèle IFC ouvert, sans export ni serveur : panneau **Checkers** dans la barre latérale de la vue 3D. Mêmes règles Excel, même IDS, même bilan carbone et même rapport Excel que l'application web ; en plus, chaque anomalie se sélectionne en un clic dans la maquette, et le modèle peut être coloré conforme / non conforme. Voir [`bonsai_extension/README.md`](bonsai_extension/README.md).
 
+## Mode hors ligne (réseau isolé ou sensible)
+
+Avec `CHECKERS_OFFLINE=true`, ni le navigateur ni le serveur ne contactent de service externe (voir `offline_config.py`) :
+
+| Appel externe en mode normal | En mode hors ligne |
+|---|---|
+| Bootstrap, Chart.js, Leaflet depuis des CDN | servis depuis `static/vendor/`, sinon désactivés (jamais de repli vers le CDN) |
+| Visionneuse 3D : module, *worker* et WebAssembly depuis jsdelivr / unpkg | servis localement, sinon visionneuse désactivée |
+| Fond de carte OpenStreetMap, qui reçoit les coordonnées du site | aucun fond, ou serveur de tuiles interne (`MAP_TILE_URL`) |
+| Escalade des agents IA vers le modèle cloud (Anthropic) | interdite, même avec une clé ; seul Ollama (local) reste possible |
+| Télémétrie CrewAI / OpenTelemetry, table de prix LiteLLM | coupées |
+
+Le serveur envoie en plus une **politique de sécurité du contenu (CSP)** limitée à sa propre origine (et au serveur de tuiles déclaré) : le navigateur bloque toute requête externe, même en cas d'oubli dans le code. Au démarrage, Checkers affiche l'état de chaque bibliothèque (locale / désactivée). La validation des IDS utilise les schémas XSD embarqués (ifctester / xmlschema), sans téléchargement.
+
+Installation des bibliothèques, **sur une machine connectée** :
+
+```bash
+python scripts/vendor_assets.py            # Bootstrap, Chart.js, Leaflet (empreintes SRI vérifiées)
+python scripts/vendor_assets.py --viewer   # + visionneuse 3D (Node.js/npm requis, à valider)
+# ou directement dans l'image :
+docker build --build-arg VENDOR_ASSETS=true -t checkers .
+```
+
+Transférez ensuite `static/vendor/` ou l'image sur le réseau isolé, puis lancez Checkers avec `CHECKERS_OFFLINE=true`. Sans bibliothèques installées, l'application reste utilisable : analyses, tableaux, rapports Excel et BCF fonctionnent, mais sans graphiques, sans carte et sans visionneuse 3D.
+
 ## Prérequis
 
 - Docker
@@ -114,6 +139,9 @@ L'application sera accessible à l'adresse : http://localhost:8080
 ├── history.py            # Historique persistant des analyses + comparaison (anomalies)
 ├── ids_check.py          # Contrôle IDS (ifctester) : chargement sécurisé, validation par lot, onglet Excel
 ├── excel_safety.py       # Neutralisation de l'injection de formule dans les rapports Excel
+├── offline_config.py     # Mode hors ligne (CHECKERS_OFFLINE) : bibliothèques locales, carte, CSP, IA cloud
+├── scripts/vendor_assets.py # Installation locale des bibliothèques front (mode hors ligne)
+├── tests/                # python -m unittest discover tests
 ├── agents/               # Préconisations par agents IA (CrewAI, optionnel)
 ├── Dockerfile           # Configuration Docker
 ├── docker-compose.yml   # Configuration Docker Compose

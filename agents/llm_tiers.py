@@ -10,6 +10,8 @@ import os
 
 from crewai import LLM, Crew, Process
 
+import offline_config
+
 from . import budget
 
 DEFAULT_CLOUD_MODEL = "anthropic/claude-haiku-4-5-20251001"
@@ -27,6 +29,13 @@ def _cloud_model_name() -> str:
 
 
 def build_cloud_llm() -> LLM | None:
+    # Mode hors ligne (offline_config.py) : jamais d'appel au modèle cloud,
+    # même avec une clé configurée -- les faits du modèle ne doivent pas
+    # quitter le réseau.
+    if not offline_config.cloud_llm_allowed():
+        print("  [mode hors ligne : escalade vers le modèle cloud interdite, on reste en local]")
+        return None
+
     api_key = os.environ.get("CLOUD_ANTHROPIC_API_KEY")
     if not api_key:
         return None

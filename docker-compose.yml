@@ -8,6 +8,9 @@ services:
     environment:
       - FLASK_ENV=production
       - FLASK_APP=Checkers.py
+      # Réseau isolé / sensible : décommenter (voir README, « Mode hors ligne »).
+      # - CHECKERS_OFFLINE=true
+      # - MAP_TILE_URL=https://tuiles.intranet.example/{z}/{x}/{y}.png
     # Préconisations IA (voir .env.example) : ENABLE_AI_RECOMMENDATIONS=false
     # par défaut dans l'image. Pour les activer, décommenter et ajuster :
     # env_file: .env
