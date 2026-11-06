@@ -60,7 +60,7 @@ class CheckersProperties(bpy.types.PropertyGroup):
         description="Information Delivery Specification (.ids) : exigences du cahier des charges BIM")
     rules_path: bpy.props.StringProperty(
         name="Règles Excel", subtype="FILE_PATH",
-        description="Fichier Excel de PSet requis (format Checkers), facultatif si un IDS est fourni")
+        description="Fichier Excel de PSet requis, facultatif si un IDS est fourni")
     corps_etat: bpy.props.EnumProperty(name="Corps d'état", items=_corps_etat_enum,
                                        description="Lignes du fichier Excel à appliquer")
 

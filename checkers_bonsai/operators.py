@@ -183,6 +183,16 @@ class CHECKERS_OT_use_example_ids(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class CHECKERS_OT_use_example_rules(bpy.types.Operator):
+    bl_idname = "checkers.use_example_rules"
+    bl_label = "Règles d'exemple"
+    bl_description = "Utiliser le fichier de règles Excel d'exemple fourni avec l'extension (multi-corps d'état)"
+
+    def execute(self, context):
+        context.scene.checkers.rules_path = os.path.join(EXAMPLES_DIR, "regles_exemple.xlsx")
+        return {"FINISHED"}
+
+
 class CHECKERS_OT_export_report(bpy.types.Operator, ExportHelper):
     bl_idname = "checkers.export_report"
     bl_label = "Fiche de recette (Excel)"
@@ -250,6 +260,7 @@ classes = (
     CHECKERS_OT_color_results,
     CHECKERS_OT_reset_colors,
     CHECKERS_OT_use_example_ids,
+    CHECKERS_OT_use_example_rules,
     CHECKERS_OT_export_report,
     CHECKERS_OT_export_bcf,
 )

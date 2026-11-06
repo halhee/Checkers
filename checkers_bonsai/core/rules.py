@@ -1,4 +1,4 @@
-"""Fichier Excel de règles PSet (format historique de Checkers).
+"""Fichier Excel de règles PSet (exemple : examples/regles_exemple.xlsx).
 
 Structure attendue :
 - onglet « Element_Types » : colonne IFC_Class (classes contrôlées) ;
@@ -117,8 +117,8 @@ def load_rules(path: str, code: Optional[str] = None) -> dict:
 
 
 def value_matches(value, param_type: str) -> bool:
-    """Même règle que l'application web : la valeur doit être convertible
-    dans le type attendu (Int accepte 3.0, Bool accepte toute valeur)."""
+    """La valeur doit être convertible dans le type attendu (Int accepte
+    3.0, Bool accepte toute valeur renseignée)."""
     try:
         SUPPORTED_TYPES[param_type.lower()](value)
         return True

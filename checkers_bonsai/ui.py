@@ -52,7 +52,9 @@ class CHECKERS_PT_referentials(_SubPanel, bpy.types.Panel):
         row = col.row(align=True)
         row.prop(props, "ids_path")
         row.operator_menu_enum("checkers.use_example_ids", "example", text="", icon="PRESET")
-        col.prop(props, "rules_path")
+        row = col.row(align=True)
+        row.prop(props, "rules_path")
+        row.operator("checkers.use_example_rules", text="", icon="PRESET")
         if props.rules_path and registry_for(props.rules_path):
             col.prop(props, "corps_etat")
 

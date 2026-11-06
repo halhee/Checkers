@@ -1,4 +1,4 @@
-"""Tests de l'extension Bonsai (bonsai_extension/checkers_bonsai).
+"""Tests de l'extension (checkers_bonsai).
 
     python -m unittest discover tests
 
@@ -19,9 +19,8 @@ from xml.etree import ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKES = os.path.join(ROOT, "tests", "fakes")
-EXTENSION_DIR = os.path.join(ROOT, "bonsai_extension")
-PACKAGE = os.path.join(EXTENSION_DIR, "checkers_bonsai")
-sys.path[:0] = [FAKES, EXTENSION_DIR]
+PACKAGE = os.path.join(ROOT, "checkers_bonsai")
+sys.path[:0] = [FAKES, ROOT]
 
 import ifcopenshell  # noqa: E402  (doublure)
 from openpyxl import load_workbook  # noqa: E402
@@ -29,8 +28,8 @@ from openpyxl import load_workbook  # noqa: E402
 from checkers_bonsai.core import bcf, ids as ids_check, recette, report, rules, spatial  # noqa: E402
 from checkers_bonsai.core.psets import MISSING_PARAM, MISSING_PSET, check_psets  # noqa: E402
 
-RULES_XLSX = os.path.join(ROOT, "exemple_parametres_corps_etat.xlsx")
 EXAMPLES = os.path.join(PACKAGE, "examples")
+RULES_XLSX = os.path.join(EXAMPLES, "regles_exemple.xlsx")
 XSD_DIR = os.environ.get("BCF_XSD_DIR")
 
 
@@ -416,11 +415,14 @@ class ExtensionTest(unittest.TestCase):
             self.assertEqual(op.execute(ctx), {"FINISHED"})
             self.assertTrue(os.path.getsize(op.filepath) > 0)
 
-    def test_example_ids_operator(self):
+    def test_example_operators(self):
         op = self.ops.CHECKERS_OT_use_example_ids()
         op.example = "exploitation_maintenance.ids"
         op.execute(self.context)
         self.assertTrue(os.path.isfile(self.props.ids_path))
+        self.props.rules_path = ""
+        self.ops.CHECKERS_OT_use_example_rules().execute(self.context)
+        self.assertTrue(os.path.isfile(self.props.rules_path))
 
     def test_no_model(self):
         self.tool.Ifc.file = None

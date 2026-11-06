@@ -1,10 +1,9 @@
 """Construit le .zip de l'extension, installable dans Blender via
 Édition > Préférences > Extensions > (menu ⌄) > Installer depuis le disque.
 
-    python bonsai_extension/build.py
+    python build.py
 
-L'extension est autonome (checkers_bonsai/) : aucun module n'est copié
-depuis le reste du dépôt. Équivalent à `blender --command extension build`
+Équivalent à `blender --command extension build --source-dir checkers_bonsai`
 pour qui a Blender sous la main.
 """
 import os
