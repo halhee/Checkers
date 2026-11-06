@@ -1,24 +1,28 @@
-"""Checkers pour Bonsai : contrôle du modèle IFC ouvert (règles Excel,
-IDS, bilan carbone) avec le même moteur que l'application web Checkers.
+"""Checkers – recette de maquettes IFC dans Bonsai.
+
+Contrôle le modèle ouvert dans Bonsai avec un IDS (cahier des charges BIM)
+et/ou un fichier Excel de PSet requis, produit une fiche de recette à signer
+et un export BCF des anomalies. Fonctionne entièrement hors ligne.
 
 Panneau : vue 3D > barre latérale (N) > onglet « Checkers ».
 """
-import bpy
 
-from . import engine, operators, props, ui
 
-_classes = props.classes + operators.classes + ui.classes
+def _classes():
+    from . import operators, props, ui
+    return props.classes + operators.classes + ui.classes
 
 
 def register():
-    engine.ensure_lib_on_path()
-    for cls in _classes:
+    import bpy
+    from .props import CheckersProperties
+    for cls in _classes():
         bpy.utils.register_class(cls)
-    bpy.types.Scene.checkers = bpy.props.PointerProperty(type=props.CheckersProperties)
+    bpy.types.Scene.checkers = bpy.props.PointerProperty(type=CheckersProperties)
 
 
 def unregister():
+    import bpy
     del bpy.types.Scene.checkers
-    for cls in reversed(_classes):
+    for cls in reversed(_classes()):
         bpy.utils.unregister_class(cls)
-    engine.remove_lib_from_path()

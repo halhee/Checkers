@@ -1,58 +1,98 @@
 import bpy
 
-from . import engine
+from .core import rules as rules_file
 
-# Blender exige que les chaînes renvoyées par un callback d'EnumProperty
-# restent référencées côté Python : sans cette liste, l'affichage de la
-# liste déroulante peut montrer des caractères aléatoires.
+PHASES = [
+    "ESQ – Esquisse", "APS – Avant-projet sommaire", "APD – Avant-projet définitif", "PRO – Projet",
+    "DCE – Dossier de consultation des entreprises", "EXE – Exécution", "DOE – Dossier des ouvrages exécutés",
+    "Exploitation – maintenance",
+]
+
+ALL_RULES = "ALL"
+
+# Les chaînes d'un callback d'EnumProperty doivent rester référencées côté
+# Python, sinon Blender peut afficher des caractères aléatoires.
 _corps_etat_items = []
+_registry_cache = {}
 
 
-def corps_etat_items(self, context):
-    registry = engine.load_corps_etat(bpy.path.abspath(self.rules_path)) if self.rules_path else None
-    _corps_etat_items[:] = [(engine.AUTO, "Auto", "Correspondance automatique avec le nom du lot")]
-    for code, nom in (registry or {}).items():
+def registry_for(path: str):
+    """Onglet Corps_Etat du fichier de règles, mis en cache par (chemin,
+    date de modification) : appelé à chaque rafraîchissement du panneau."""
+    import os
+    path = bpy.path.abspath(path) if path else ""
+    if not path or not os.path.isfile(path):
+        return None
+    key = (path, os.path.getmtime(path))
+    if key not in _registry_cache:
+        _registry_cache.clear()
+        try:
+            _registry_cache[key] = rules_file.load_registry(path)
+        except Exception:
+            _registry_cache[key] = None
+    return _registry_cache[key]
+
+
+def _corps_etat_enum(self, context):
+    _corps_etat_items[:] = [(ALL_RULES, "Toutes les règles", "Appliquer toutes les lignes du fichier")]
+    for code, nom in (registry_for(self.rules_path) or {}).items():
         _corps_etat_items.append((code, f"{code} – {nom}", nom))
     return _corps_etat_items
 
 
+def _phase_search(self, context, edit_text):
+    return [p for p in PHASES if edit_text.lower() in p.lower()] or PHASES
+
+
 class CheckersAnomaly(bpy.types.PropertyGroup):
-    lot: bpy.props.StringProperty(name="Lot")
-    floor: bpy.props.StringProperty(name="Étage")
+    level: bpy.props.StringProperty(name="Niveau / partie")
     ifc_class: bpy.props.StringProperty(name="Classe IFC")
-    pset: bpy.props.StringProperty(name="PSet / spécification")
+    requirement: bpy.props.StringProperty(name="Exigence")
+    source: bpy.props.StringProperty(name="Source")
     count: bpy.props.IntProperty(name="Éléments")
-    guids: bpy.props.StringProperty(name="GlobalId", options={"HIDDEN"})
+    guids: bpy.props.StringProperty(options={"HIDDEN"})
 
 
 class CheckersProperties(bpy.types.PropertyGroup):
-    rules_path: bpy.props.StringProperty(
-        name="Règles Excel", subtype="FILE_PATH",
-        description="Fichier Excel de paramètres requis (Element_Types + un onglet par PSet)")
+    # Référentiels
     ids_path: bpy.props.StringProperty(
         name="IDS", subtype="FILE_PATH",
-        description="Information Delivery Specification (.ids), optionnel")
-    lot_name: bpy.props.StringProperty(
-        name="Lot", description="Nom du lot (par défaut : nom du fichier IFC)")
-    corps_etat: bpy.props.EnumProperty(
-        name="Corps d'état", items=corps_etat_items,
-        description="Corps d'état dont les règles s'appliquent (onglet Corps_Etat du fichier Excel)")
+        description="Information Delivery Specification (.ids) : exigences du cahier des charges BIM")
+    rules_path: bpy.props.StringProperty(
+        name="Règles Excel", subtype="FILE_PATH",
+        description="Fichier Excel de PSet requis (format Checkers), facultatif si un IDS est fourni")
+    corps_etat: bpy.props.EnumProperty(name="Corps d'état", items=_corps_etat_enum,
+                                       description="Lignes du fichier Excel à appliquer")
 
-    bcf_author: bpy.props.StringProperty(
-        name="Auteur BCF", description="Auteur des sujets BCF (adresse e-mail en général)")
+    # Informations de recette
+    lot: bpy.props.StringProperty(name="Lot", description="Lot ou corps d'état contrôlé (ex. Lot 02 – Gros œuvre)")
+    phase: bpy.props.StringProperty(name="Phase", search=_phase_search,
+                                    description="Phase ou jalon de livraison (ex. DOE)")
+    tester: bpy.props.StringProperty(name="Réalisée par", description="Nom et fonction de la personne qui recette")
+    marking: bpy.props.StringProperty(
+        name="Mention", description="Mention de confidentialité facultative, portée sur chaque page du rapport "
+                                    "et dans le BCF (ex. CONFIDENTIEL)")
+    threshold_ok: bpy.props.FloatProperty(name="Seuil « validé »", default=0.98, min=0.0, max=1.0,
+                                          subtype="FACTOR")
+    threshold_reserve: bpy.props.FloatProperty(name="Seuil « avec réserves »", default=0.90, min=0.0, max=1.0,
+                                               subtype="FACTOR")
+    bcf_author: bpy.props.StringProperty(name="Auteur BCF",
+                                         description="Auteur des sujets BCF (adresse électronique en général)")
 
+    # Résultats
     has_result: bpy.props.BoolProperty(default=False)
-    total_elements: bpy.props.IntProperty()
-    valid_elements: bpy.props.IntProperty()
-    carbon_total: bpy.props.FloatProperty()
-    ids_pass_rate: bpy.props.FloatProperty(default=-1.0)
-    lot_description: bpy.props.StringProperty()
-    has_rules: bpy.props.BoolProperty(default=True)
-    report_path: bpy.props.StringProperty(subtype="FILE_PATH")
-    rules_description: bpy.props.StringProperty()
-
+    verdict: bpy.props.StringProperty()
+    pset_rate: bpy.props.FloatProperty(default=-1.0)
+    pset_checked: bpy.props.IntProperty()
+    ids_rate: bpy.props.FloatProperty(default=-1.0)
+    ids_applicable: bpy.props.IntProperty()
+    invalid_count: bpy.props.IntProperty()
+    warnings: bpy.props.StringProperty()
     anomalies: bpy.props.CollectionProperty(type=CheckersAnomaly)
     anomaly_index: bpy.props.IntProperty()
+
+    def marking_text(self) -> str:
+        return self.marking.strip().upper()
 
 
 classes = (CheckersAnomaly, CheckersProperties)

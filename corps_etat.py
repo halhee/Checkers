@@ -62,9 +62,8 @@ def match_lot_name(lot_name: str, registry: dict) -> tuple:
     try:
         from rapidfuzz import fuzz, process
     except ImportError:
-        # rapidfuzz n'est pas fourni par Bonsai : dans Blender, sans lui,
-        # seule la correspondance exacte est tentée (le choix explicite du
-        # corps d'état reste possible dans le panneau Checkers).
+        # rapidfuzz absent : seule la correspondance exacte est tentée (le
+        # choix explicite du corps d'état reste possible dans le formulaire).
         return None, "ambigu"
 
     choices = {code: _normalize(nom) for code, nom in registry.items()}

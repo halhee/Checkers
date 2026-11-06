@@ -17,7 +17,7 @@ load_dotenv()
 
 # Le moteur d'analyse (process_files, règles Excel, onglets du rapport) vit
 # dans checkers_core/analysis.py, sans dépendance à Flask, pour être
-# réutilisable depuis l'extension Bonsai (voir bonsai_extension/).
+# testable et réutilisable hors de l'application web.
 # Importé après load_dotenv() : les agents IA lisent leur configuration
 # (.env) au moment où ils sont appelés.
 from checkers_core.analysis import process_files

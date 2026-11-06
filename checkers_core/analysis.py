@@ -1,12 +1,12 @@
 """Moteur d'analyse de Checkers, indépendant de Flask.
 
 Extrait de Checkers.py pour pouvoir être appelé ailleurs que depuis la
-route /upload -- en particulier depuis l'extension Bonsai (voir
-bonsai_extension/), sur le modèle IFC déjà ouvert dans Blender, sans
-export préalable. Checkers.py (Flask) importe `process_files` d'ici : le
-comportement de l'application web est inchangé.
+route /upload (tests, scripts), y compris sur un modèle IFC déjà ouvert.
+Checkers.py (Flask) importe `process_files` d'ici : le comportement de
+l'application web est inchangé. L'extension Bonsai (bonsai_extension/) a
+son propre moteur, autonome, et n'utilise pas ce module.
 
-Dépendances : ifcopenshell, pandas, openpyxl (toutes fournies par Bonsai),
+Dépendances : ifcopenshell, pandas, openpyxl,
 plus les modules du projet carbon, site_location, corps_etat, ids_check et
 excel_safety. Les agents IA (agents/, CrewAI) ne sont importés qu'à la
 demande, et seulement si les préconisations sont activées.
@@ -636,7 +636,7 @@ def _write_detail_row(details, row: int, cells, col_widths: list):
 def _disabled_recommendations(reason: str) -> dict:
     """Même structure que agents.recommendations.run_recommendations_pipeline
     en mode dégradé -- utilisée quand les préconisations sont désactivées
-    par l'appelant (extension Bonsai) ou que le paquet agents/ est absent."""
+    par l'appelant ou que le paquet agents/ est absent."""
     return {
         "carbon_expert": None,
         "data_quality_expert": None,
@@ -666,14 +666,14 @@ def process_files(temp_dir: str, lots: list, excel_file_path: Optional[str], out
     """`lots` = liste de `(lot_name, ifc_file, explicit_corps_etat_code)`,
     au moins un élément. `ifc_file` est soit le chemin d'un fichier IFC
     (application web), soit un modèle déjà ouvert (`ifcopenshell.file`,
-    ex. le modèle chargé dans Bonsai) -- il n'est alors ni rouvert ni
+    ex. chargé par un script) -- il n'est alors ni rouvert ni
     modifié.
 
     `with_recommendations=False` saute entièrement les agents IA (aucun
     import de CrewAI, pas d'onglet "Préconisations"). `collect_elements=True`
     ajoute au résultat les GlobalId concernés : clé "elements" ({"valid":
     [...], "invalid": [...]}) et clé "guids" sur chaque anomalie -- utilisé
-    par l'extension Bonsai pour sélectionner/colorer les éléments ; désactivé
+    par l'export BCF ; désactivé
     par défaut pour ne pas alourdir la réponse JSON ni l'historique de
     l'application web. `explicit_corps_etat_code` est None si l'utilisateur
     a laissé "Auto" côté dashboard -- la correspondance automatique (exact,
@@ -808,7 +808,7 @@ def process_files(temp_dir: str, lots: list, excel_file_path: Optional[str], out
 
     for lot_name, ifc_source, _ in lots:
         print(f"Analyzing lot '{lot_name}'... ({time.time() - start_time:.2f}s)")
-        # Chemin (application web) ou modèle déjà ouvert (Bonsai).
+        # Chemin (application web) ou modèle déjà ouvert.
         ifc_file = ifcopenshell.open(ifc_source) if isinstance(ifc_source, (str, os.PathLike)) else ifc_source
         unit_scale = carbon.get_length_unit_scale(ifc_file)
         if site_coords is None:

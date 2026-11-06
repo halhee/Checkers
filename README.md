@@ -79,7 +79,7 @@ Sur Vercel (serverless), CrewAI + Ollama local ne fonctionnent pas (pas de proce
 
 ## Extension Bonsai (Blender)
 
-Le moteur d'analyse est aussi disponible directement dans [Bonsai](https://bonsaibim.org/) (Blender), sur le modèle IFC ouvert, sans export ni serveur : panneau **Checkers** dans la barre latérale de la vue 3D. Mêmes règles Excel, même IDS, même bilan carbone et même rapport Excel que l'application web ; en plus, chaque anomalie se sélectionne en un clic dans la maquette, et le modèle peut être coloré conforme / non conforme. Voir [`bonsai_extension/README.md`](bonsai_extension/README.md).
+Une extension autonome pour [Bonsai](https://bonsaibim.org/) fait la recette de la maquette ouverte dans Blender, entièrement hors ligne. Elle contrôle l'IDS et/ou les règles Excel, produit une fiche de recette à signer (traçabilité SHA-256, mention de confidentialité facultative) et exporte les anomalies en BCF. Elle a son propre moteur, sans IA ni bilan carbone. Voir [`bonsai_extension/README.md`](bonsai_extension/README.md).
 
 ## Prérequis
 
@@ -107,7 +107,7 @@ L'application sera accessible à l'adresse : http://localhost:8080
 .
 ├── Checkers.py           # Application Flask principale (routes)
 ├── checkers_core/        # Moteur d'analyse sans Flask (process_files, règles Excel, onglets du rapport)
-├── bonsai_extension/     # Extension Bonsai/Blender (panneau Checkers) + script de build
+├── bonsai_extension/     # Extension Bonsai autonome (recette IFC hors ligne) + script de build
 ├── carbon.py             # Bilan carbone (matériaux réels, facteurs, onglet Excel)
 ├── site_location.py      # Géoréférencement du site (IfcSite.RefLatitude/RefLongitude)
 ├── corps_etat.py         # Registre des corps d'état et correspondance lot -> discipline

@@ -1,24 +1,25 @@
 schema_version = "1.0.0"
 
 id = "checkers_bonsai"
-version = "0.1.0"
-name = "Checkers"
-tagline = "Contrôle des PSet, de l'IDS et bilan carbone du modèle IFC ouvert dans Bonsai"
+version = "0.2.0"
+name = "Checkers - recette IFC"
+tagline = "Recette IFC hors ligne : IDS, PSet, fiche de recette, BCF"
 maintainer = "Checkers <khchiche.zakaria@gmail.com>"
 type = "add-on"
 website = "https://github.com/halhee/Checkers"
 
 tags = ["Import-Export", "Object"]
 
-# Bonsai fournit ifcopenshell, ifctester, pandas et openpyxl : l'extension
-# n'embarque aucune dépendance tierce, seulement les modules de Checkers
-# (copiés dans lib/ par bonsai_extension/build.py).
+# Bonsai fournit ifcopenshell, ifctester et openpyxl : aucune dépendance
+# n'est embarquée.
 blender_version_min = "4.2.0"
 
 license = ["SPDX:MIT"]
 
+# Aucune permission « network » : l'extension ne fait aucun accès réseau
+# (fonctionnement hors ligne garanti, voir tests/test_bonsai_extension.py).
 [permissions]
-files = "Lecture des fichiers de règles (Excel, IDS) et écriture du rapport Excel"
+files = "Lecture des référentiels (IDS, Excel) et enregistrement de la fiche de recette et du BCF"
 
 [build]
 paths_exclude_pattern = ["__pycache__/", "*.pyc"]

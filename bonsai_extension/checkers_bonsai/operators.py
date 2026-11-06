@@ -1,40 +1,42 @@
 import os
-import shutil
+import re
 
 import bpy
 from bpy_extras.io_utils import ExportHelper
 
-from . import engine
+from . import bonsai_link
+from .core import bcf, recette, report
+from .props import ALL_RULES
 
-# Résultats non persistés dans le .blend (gros volumes, recalculables) :
-# statut de chaque élément pour la coloration, et couleurs d'origine des
-# objets pour pouvoir les restaurer.
-_last_status = {"valid": set(), "invalid": set()}
-_original_colors = {}
-_original_color_types = {}
+EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "examples")
+
+# Dernière recette (en mémoire : volumineuse et recalculable) et couleurs
+# d'origine des objets, pour la réinitialisation.
+_state = {"result": None, "colors": {}, "color_types": {}}
 
 COLOR_VALID = (0.30, 0.75, 0.35, 1.0)
 COLOR_INVALID = (0.90, 0.20, 0.20, 1.0)
 
 
-def _objects_for_guids(guids):
-    """Objets Blender des GlobalId donnés. Retourne (objets, nb introuvables) :
-    un élément peut ne pas avoir d'objet (non chargé, filtré à l'ouverture)."""
-    tool = engine.bonsai_tool()
-    ifc_file = engine.current_ifc()
-    objects, missing = [], 0
-    if tool is None or ifc_file is None:
-        return objects, len(guids)
-    for guid in guids:
-        try:
-            obj = tool.Ifc.get_object(ifc_file.by_guid(guid))
-        except Exception:
-            obj = None
-        if obj is None:
-            missing += 1
-        else:
-            objects.append(obj)
-    return objects, missing
+def last_result():
+    return _state["result"]
+
+
+def _settings(props) -> recette.RecetteSettings:
+    return recette.RecetteSettings(
+        ids_path=bpy.path.abspath(props.ids_path) if props.ids_path else "",
+        rules_path=bpy.path.abspath(props.rules_path) if props.rules_path else "",
+        corps_etat=None if props.corps_etat in ("", ALL_RULES) else props.corps_etat,
+        lot=props.lot.strip(), phase=props.phase.strip(), tester=props.tester.strip(),
+        marking=props.marking_text(), threshold_ok=props.threshold_ok, threshold_reserve=props.threshold_reserve,
+    )
+
+
+def _default_name(extension: str) -> str:
+    result = last_result()
+    parts = ["Recette", result.settings.lot if result else "", result.date.strftime("%Y%m%d") if result else ""]
+    name = "_".join(p for p in parts if p)
+    return re.sub(r"[^\w\-]+", "_", name).strip("_") + extension
 
 
 def _view3d_spaces(context):
@@ -46,125 +48,103 @@ def _view3d_spaces(context):
                         yield space
 
 
-class CHECKERS_OT_run_analysis(bpy.types.Operator):
-    bl_idname = "checkers.run_analysis"
-    bl_label = "Lancer l'analyse"
-    bl_description = "Contrôle le modèle IFC ouvert avec les règles Excel et/ou IDS choisies"
+class CHECKERS_OT_run_recette(bpy.types.Operator):
+    bl_idname = "checkers.run_recette"
+    bl_label = "Lancer la recette"
+    bl_description = "Contrôle le modèle IFC ouvert avec l'IDS et/ou les règles Excel choisis"
 
     @classmethod
     def poll(cls, context):
-        return engine.current_ifc() is not None
+        props = context.scene.checkers
+        return bonsai_link.current_ifc() is not None and bool(props.ids_path or props.rules_path)
 
     def execute(self, context):
         props = context.scene.checkers
         wm = context.window_manager
         wm.progress_begin(0, 1)
         try:
-            result = engine.run_analysis(
-                engine.current_ifc(),
-                lot_name=props.lot_name,
-                rules_path=bpy.path.abspath(props.rules_path) if props.rules_path else "",
-                ids_path=bpy.path.abspath(props.ids_path) if props.ids_path else "",
-                corps_etat_code=props.corps_etat,
-            )
+            result = recette.run_recette(bonsai_link.current_ifc(), _settings(props),
+                                         model_path=bonsai_link.current_ifc_path())
         except Exception as exc:
-            self.report({"ERROR"}, f"Analyse impossible : {exc}")
+            self.report({"ERROR"}, f"Recette impossible : {exc}")
             return {"CANCELLED"}
         finally:
             wm.progress_end()
 
-        valid, invalid = engine.element_status(result)
-        _last_status["valid"], _last_status["invalid"] = valid, invalid
-
+        _state["result"] = result
         props.has_result = True
-        props.total_elements = result["total_elements"]
-        props.valid_elements = result["valid_elements"]
-        props.report_path = result["report_path"]
-        props.carbon_total = result["carbon_footprint"]["total"]
-        lot = result["lots"][0]
-        props.lot_description = lot["corps_etat"]
-        props.rules_description = " + ".join(
-            f"{kind} « {os.path.basename(path)} »"
-            for kind, path in (("Excel", props.rules_path), ("IDS", props.ids_path)) if path)
-        props.has_rules = lot["has_rules"]
-        ids = result.get("ids")
-        props.ids_pass_rate = ids["global_pass_rate"] if ids and ids["global_pass_rate"] is not None else -1.0
-
+        props.verdict = result.verdict
+        props.pset_rate = -1.0 if result.pset_rate is None else result.pset_rate
+        props.pset_checked = result.pset["checked"] if result.pset else 0
+        props.ids_rate = -1.0 if result.ids_rate is None else result.ids_rate
+        props.ids_applicable = result.ids_result["applicable_total"] if result.ids_result else 0
+        props.invalid_count = len(result.invalid_guids)
+        props.warnings = "\n".join(result.warnings)
         props.anomalies.clear()
-        for anomaly in sorted(result["anomalies"], key=lambda a: -a["count"]):
+        for anomaly in result.anomalies:
             item = props.anomalies.add()
-            item.lot = anomaly["lot"]
-            item.floor = str(anomaly["floor"])
-            item.ifc_class = anomaly["ifc_class"]
-            item.pset = anomaly["pset"]
-            item.count = anomaly["count"]
-            item.guids = ";".join(anomaly.get("guids", []))
+            item.level, item.ifc_class = anomaly["level"], anomaly["ifc_class"]
+            item.requirement, item.source = anomaly["requirement"], anomaly["source"]
+            item.count, item.guids = anomaly["count"], ";".join(anomaly["guids"])
         props.anomaly_index = 0
-
-        self.report({"INFO"}, f"Analyse terminée en {result['duration_s']:.1f} s : "
-                              f"{len(result['anomalies'])} anomalie(s)")
+        self.report({"INFO"}, f"Recette terminée en {result.duration_s:.1f} s : {result.verdict}, "
+                              f"{len(result.anomalies)} anomalie(s)")
         return {"FINISHED"}
 
 
 class CHECKERS_OT_select_anomaly(bpy.types.Operator):
     bl_idname = "checkers.select_anomaly"
     bl_label = "Sélectionner"
-    bl_description = "Sélectionne dans la vue 3D les éléments concernés par cette anomalie"
+    bl_description = "Sélectionne et cadre dans la vue 3D les éléments concernés par cette anomalie"
     bl_options = {"REGISTER", "UNDO"}
 
     index: bpy.props.IntProperty(default=-1)
-    frame: bpy.props.BoolProperty(name="Cadrer", default=True)
 
     def execute(self, context):
         props = context.scene.checkers
         index = self.index if self.index >= 0 else props.anomaly_index
-        if not (0 <= index < len(props.anomalies)):
+        if not 0 <= index < len(props.anomalies):
             return {"CANCELLED"}
-        guids = [g for g in props.anomalies[index].guids.split(";") if g]
-        objects, missing = _objects_for_guids(guids)
-
+        props.anomaly_index = index
+        objects, missing = bonsai_link.objects_for_guids([g for g in props.anomalies[index].guids.split(";") if g])
         for obj in context.selected_objects:
             obj.select_set(False)
-        selectable = [o for o in objects if o.visible_get()]
-        for obj in selectable:
+        visible = [o for o in objects if o.visible_get()]
+        for obj in visible:
             obj.select_set(True)
-        if selectable:
-            context.view_layer.objects.active = selectable[0]
-            if self.frame and context.area and context.area.type == "VIEW_3D":
-                # Le bouton est dans la barre latérale : le cadrage doit viser
-                # la région principale de la vue 3D, pas la barre elle-même.
-                region = next((r for r in context.area.regions if r.type == "WINDOW"), None)
-                if region is not None:
-                    with context.temp_override(area=context.area, region=region):
-                        bpy.ops.view3d.view_selected()
-
-        hidden = len(objects) - len(selectable)
-        message = f"{len(selectable)} élément(s) sélectionné(s)"
-        if hidden:
-            message += f", {hidden} masqué(s)"
+        if visible:
+            context.view_layer.objects.active = visible[0]
+            region = next((r for r in context.area.regions if r.type == "WINDOW"), None) if context.area else None
+            if region is not None and context.area.type == "VIEW_3D":
+                with context.temp_override(area=context.area, region=region):
+                    bpy.ops.view3d.view_selected()
+        message = f"{len(visible)} élément(s) sélectionné(s)"
+        if len(objects) > len(visible):
+            message += f", {len(objects) - len(visible)} masqué(s)"
         if missing:
             message += f", {missing} sans objet dans la scène"
-        self.report({"INFO"} if selectable else {"WARNING"}, message)
+        self.report({"INFO"} if visible else {"WARNING"}, message)
         return {"FINISHED"}
 
 
 class CHECKERS_OT_color_results(bpy.types.Operator):
     bl_idname = "checkers.color_results"
     bl_label = "Colorer"
-    bl_description = "Colore le modèle : vert = conforme, rouge = non conforme (affichage par couleur d'objet)"
+    bl_description = "Vert = conforme, rouge = non conforme ; les éléments non contrôlés ne changent pas"
 
     @classmethod
     def poll(cls, context):
-        return bool(_last_status["valid"] or _last_status["invalid"])
+        return last_result() is not None
 
     def execute(self, context):
-        for status, color in (("valid", COLOR_VALID), ("invalid", COLOR_INVALID)):
-            objects, _ = _objects_for_guids(_last_status[status])
+        result = last_result()
+        for guids, color in ((result.valid_guids, COLOR_VALID), (result.invalid_guids, COLOR_INVALID)):
+            objects, _ = bonsai_link.objects_for_guids(sorted(guids))
             for obj in objects:
-                _original_colors.setdefault(obj.name, tuple(obj.color))
+                _state["colors"].setdefault(obj.name, tuple(obj.color))
                 obj.color = color
         for space in _view3d_spaces(context):
-            _original_color_types.setdefault(space.as_pointer(), space.shading.color_type)
+            _state["color_types"].setdefault(space.as_pointer(), space.shading.color_type)
             space.shading.color_type = "OBJECT"
         return {"FINISHED"}
 
@@ -175,71 +155,87 @@ class CHECKERS_OT_reset_colors(bpy.types.Operator):
     bl_description = "Restaure les couleurs et le mode d'affichage d'origine"
 
     def execute(self, context):
-        for name, color in _original_colors.items():
+        for name, color in _state["colors"].items():
             obj = bpy.data.objects.get(name)
             if obj is not None:
                 obj.color = color
-        _original_colors.clear()
+        _state["colors"].clear()
         for space in _view3d_spaces(context):
-            original = _original_color_types.get(space.as_pointer())
+            original = _state["color_types"].get(space.as_pointer())
             if original is not None:
                 space.shading.color_type = original
-        _original_color_types.clear()
+        _state["color_types"].clear()
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_use_example_ids(bpy.types.Operator):
+    bl_idname = "checkers.use_example_ids"
+    bl_label = "IDS d'exemple"
+    bl_description = "Utiliser un IDS d'exemple fourni avec l'extension (à adapter au cahier des charges du projet)"
+
+    example: bpy.props.EnumProperty(name="Exemple", items=[
+        ("exploitation_maintenance.ids", "Exploitation – maintenance (DOE / GMAO)", ""),
+        ("conception_minimale.ids", "Conception – exigences minimales", ""),
+    ])
+
+    def execute(self, context):
+        context.scene.checkers.ids_path = os.path.join(EXAMPLES_DIR, self.example)
         return {"FINISHED"}
 
 
 class CHECKERS_OT_export_report(bpy.types.Operator, ExportHelper):
     bl_idname = "checkers.export_report"
-    bl_label = "Enregistrer le rapport Excel"
-    bl_description = "Enregistre le rapport complet (Résumé, Détails, Carbone, IDS, Fiche de Recette)"
+    bl_label = "Fiche de recette (Excel)"
+    bl_description = "Enregistre la fiche de recette à signer, avec le détail des non-conformités"
 
     filename_ext = ".xlsx"
     filter_glob: bpy.props.StringProperty(default="*.xlsx", options={"HIDDEN"})
 
     @classmethod
     def poll(cls, context):
-        path = context.scene.checkers.report_path
-        return bool(path) and os.path.isfile(path)
+        return last_result() is not None
+
+    def invoke(self, context, event):
+        self.filepath = _default_name(".xlsx")
+        return ExportHelper.invoke(self, context, event)
 
     def execute(self, context):
-        shutil.copyfile(context.scene.checkers.report_path, self.filepath)
-        self.report({"INFO"}, f"Rapport enregistré : {self.filepath}")
+        try:
+            report.write_report(last_result(), self.filepath)
+        except OSError as exc:
+            self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Fiche de recette enregistrée : {self.filepath}")
         return {"FINISHED"}
 
 
 class CHECKERS_OT_export_bcf(bpy.types.Operator, ExportHelper):
     bl_idname = "checkers.export_bcf"
-    bl_label = "Exporter en BCF"
-    bl_description = ("Exporte les anomalies au format BCF 2.1 : un sujet par anomalie, avec les éléments "
-                      "concernés sélectionnés, à transmettre aux maîtres d'œuvre et entreprises")
+    bl_label = "Anomalies (BCF)"
+    bl_description = ("Un sujet BCF 2.1 par anomalie, éléments concernés sélectionnés : à transmettre à la "
+                      "maîtrise d'œuvre et aux entreprises")
 
     filename_ext = ".bcf"
     filter_glob: bpy.props.StringProperty(default="*.bcf", options={"HIDDEN"})
 
     @classmethod
     def poll(cls, context):
-        return len(context.scene.checkers.anomalies) > 0
+        result = last_result()
+        return result is not None and bool(result.anomalies)
+
+    def invoke(self, context, event):
+        self.filepath = _default_name(".bcf")
+        return ExportHelper.invoke(self, context, event)
 
     def execute(self, context):
-        props = context.scene.checkers
-        engine.ensure_lib_on_path()
-        from checkers_core.bcf import write_bcf
-
-        anomalies = [
-            {"lot": a.lot, "floor": a.floor, "ifc_class": a.ifc_class, "pset": a.pset,
-             "count": a.count, "guids": [g for g in a.guids.split(";") if g]}
-            for a in props.anomalies
-        ]
-        project_name = None
-        ifc_file = engine.current_ifc()
-        if ifc_file is not None:
-            projects = ifc_file.by_type("IfcProject")
-            project_name = projects[0].Name if projects else None
+        result = last_result()
+        s = result.settings
         try:
-            stats = write_bcf(self.filepath, anomalies, author=props.bcf_author,
-                              project_name=project_name, rules_description=props.rules_description)
+            stats = bcf.write_bcf(self.filepath, result.anomalies, author=context.scene.checkers.bcf_author,
+                                  project_name=result.model.get("project") or None, lot=s.lot, phase=s.phase,
+                                  referentials=recette.describe_referentials(result), marking=s.marking)
         except OSError as exc:
-            self.report({"ERROR"}, f"Écriture du BCF impossible : {exc}")
+            self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
             return {"CANCELLED"}
         message = f"BCF enregistré : {stats['topics']} sujet(s), {stats['components']} élément(s)"
         if stats["skipped_guids"]:
@@ -249,10 +245,11 @@ class CHECKERS_OT_export_bcf(bpy.types.Operator, ExportHelper):
 
 
 classes = (
-    CHECKERS_OT_run_analysis,
-    CHECKERS_OT_export_bcf,
+    CHECKERS_OT_run_recette,
     CHECKERS_OT_select_anomaly,
     CHECKERS_OT_color_results,
     CHECKERS_OT_reset_colors,
+    CHECKERS_OT_use_example_ids,
     CHECKERS_OT_export_report,
+    CHECKERS_OT_export_bcf,
 )

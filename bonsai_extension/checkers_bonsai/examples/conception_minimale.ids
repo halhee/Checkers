@@ -1,0 +1,153 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+  <info>
+    <title>Exemple – exigences minimales de conception</title>
+    <version>1.0</version>
+    <description>IDS d'exemple fourni avec l'extension Checkers pour Bonsai : exigences génériques de structuration d'une maquette (niveaux, locaux, éléments porteurs, portes). Il ne constitue pas un référentiel officiel et doit être adapté au cahier des charges BIM du projet.</description>
+    <date>2026-11-06</date>
+    <purpose>Recette des maquettes de conception</purpose>
+    <milestone>PRO / DCE</milestone>
+  </info>
+  <specifications>
+    <specification name="Niveaux – nommés" ifcVersion="IFC2X3 IFC4 IFC4X3_ADD2" identifier="CON-01" description="Chaque étage porte un nom.">
+      <applicability minOccurs="0" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <simpleValue>IFCBUILDINGSTOREY</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <attribute cardinality="required" instructions="Nommer l'étage (ex. RDC, R+1, R-1).">
+          <name>
+            <simpleValue>Name</simpleValue>
+          </name>
+        </attribute>
+      </requirements>
+    </specification>
+    <specification name="Locaux – identification" ifcVersion="IFC2X3 IFC4 IFC4X3_ADD2" identifier="CON-02" description="Chaque local porte un numéro et une désignation.">
+      <applicability minOccurs="0" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <simpleValue>IFCSPACE</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <attribute cardinality="required" instructions="Renseigner le numéro du local.">
+          <name>
+            <simpleValue>Name</simpleValue>
+          </name>
+        </attribute>
+        <attribute cardinality="required" instructions="Renseigner la désignation du local.">
+          <name>
+            <simpleValue>LongName</simpleValue>
+          </name>
+        </attribute>
+      </requirements>
+    </specification>
+    <specification name="Murs – porteur et extérieur" ifcVersion="IFC2X3 IFC4" identifier="CON-03" description="Chaque mur indique s'il est porteur et s'il est extérieur.">
+      <applicability minOccurs="0" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <xs:restriction base="xs:string">
+              <xs:enumeration value="IFCWALL"/>
+              <xs:enumeration value="IFCWALLSTANDARDCASE"/>
+            </xs:restriction>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCBOOLEAN" cardinality="required" instructions="Renseigner le caractère porteur.">
+          <propertySet>
+            <simpleValue>Pset_WallCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>LoadBearing</simpleValue>
+          </baseName>
+        </property>
+        <property dataType="IFCBOOLEAN" cardinality="required" instructions="Renseigner le caractère extérieur.">
+          <propertySet>
+            <simpleValue>Pset_WallCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>IsExternal</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+    <specification name="Murs – porteur et extérieur (IFC 4.3)" ifcVersion="IFC4X3_ADD2" identifier="CON-04" description="Chaque mur indique s'il est porteur et s'il est extérieur.">
+      <applicability minOccurs="0" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <simpleValue>IFCWALL</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCBOOLEAN" cardinality="required" instructions="Renseigner le caractère porteur.">
+          <propertySet>
+            <simpleValue>Pset_WallCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>LoadBearing</simpleValue>
+          </baseName>
+        </property>
+        <property dataType="IFCBOOLEAN" cardinality="required" instructions="Renseigner le caractère extérieur.">
+          <propertySet>
+            <simpleValue>Pset_WallCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>IsExternal</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+    <specification name="Dalles – caractère porteur" ifcVersion="IFC2X3 IFC4 IFC4X3_ADD2" identifier="CON-05" description="Chaque dalle indique si elle est porteuse.">
+      <applicability minOccurs="0" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <simpleValue>IFCSLAB</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCBOOLEAN" cardinality="required" instructions="Renseigner le caractère porteur.">
+          <propertySet>
+            <simpleValue>Pset_SlabCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>LoadBearing</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+    <specification name="Portes – degré coupe-feu et caractère extérieur" ifcVersion="IFC2X3 IFC4 IFC4X3_ADD2" identifier="CON-06" description="Chaque porte indique son degré de résistance au feu et si elle est extérieure.">
+      <applicability minOccurs="0" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <simpleValue>IFCDOOR</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCLABEL" cardinality="required" instructions="Renseigner le degré coupe-feu (ex. EI 30).">
+          <propertySet>
+            <simpleValue>Pset_DoorCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>FireRating</simpleValue>
+          </baseName>
+        </property>
+        <property dataType="IFCBOOLEAN" cardinality="required" instructions="Renseigner le caractère extérieur.">
+          <propertySet>
+            <simpleValue>Pset_DoorCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>IsExternal</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+  </specifications>
+</ids>

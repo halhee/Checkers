@@ -134,7 +134,7 @@ def validate_lot(ids_document, ifc_file, floor_of: Optional[Callable] = None) ->
 
     specifications = []
     groups = Counter()          # (spec_name, floor, ifc_class) -> nb d'éléments distincts
-    group_guids = {}            # même clé -> GlobalId concernés (sélection dans Bonsai)
+    group_guids = {}            # même clé -> GlobalId concernés (export BCF)
     details = []
     details_truncated = False
     applicable_total = 0
