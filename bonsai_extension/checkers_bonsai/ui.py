@@ -64,6 +64,9 @@ class CHECKERS_PT_main(bpy.types.Panel):
         row.operator("checkers.color_results", icon="COLOR")
         row.operator("checkers.reset_colors", icon="LOOP_BACK")
         layout.operator("checkers.export_report", icon="EXPORT")
+        box = layout.box()
+        box.prop(props, "bcf_author")
+        box.operator("checkers.export_bcf", icon="EXPORT")
 
 
 classes = (CHECKERS_UL_anomalies, CHECKERS_PT_main)

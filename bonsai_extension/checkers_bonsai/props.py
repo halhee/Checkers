@@ -17,6 +17,7 @@ def corps_etat_items(self, context):
 
 
 class CheckersAnomaly(bpy.types.PropertyGroup):
+    lot: bpy.props.StringProperty(name="Lot")
     floor: bpy.props.StringProperty(name="Étage")
     ifc_class: bpy.props.StringProperty(name="Classe IFC")
     pset: bpy.props.StringProperty(name="PSet / spécification")
@@ -37,6 +38,9 @@ class CheckersProperties(bpy.types.PropertyGroup):
         name="Corps d'état", items=corps_etat_items,
         description="Corps d'état dont les règles s'appliquent (onglet Corps_Etat du fichier Excel)")
 
+    bcf_author: bpy.props.StringProperty(
+        name="Auteur BCF", description="Auteur des sujets BCF (adresse e-mail en général)")
+
     has_result: bpy.props.BoolProperty(default=False)
     total_elements: bpy.props.IntProperty()
     valid_elements: bpy.props.IntProperty()
@@ -45,6 +49,7 @@ class CheckersProperties(bpy.types.PropertyGroup):
     lot_description: bpy.props.StringProperty()
     has_rules: bpy.props.BoolProperty(default=True)
     report_path: bpy.props.StringProperty(subtype="FILE_PATH")
+    rules_description: bpy.props.StringProperty()
 
     anomalies: bpy.props.CollectionProperty(type=CheckersAnomaly)
     anomaly_index: bpy.props.IntProperty()

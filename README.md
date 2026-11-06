@@ -17,6 +17,7 @@ Checkers est une application web permettant de valider des fichiers IFC (Industr
 - Visionneuse 3D du modèle IFC intégrée (onglet "Maquette 3D")
 - Géolocalisation du site sur une carte (onglet "Géoréférencement", à partir de `IfcSite.RefLatitude`/`RefLongitude`)
 - Génération de rapports détaillés au format Excel, avec une **Fiche de Recette** prête à signer (verdict par lot, anomalies ouvertes, zone de signature)
+- **Export BCF 2.1** des anomalies (`checkers_core/bcf.py`) : un sujet par anomalie, éléments concernés sélectionnés et colorés, à transmettre aux maîtres d'œuvre et entreprises (BIMcollab, Solibri, Revit/Navisworks, Bonsai...)
 - **Suivi des anomalies et historique des analyses** (voir `history.py`) : chaque analyse est enregistrée, comparable à une analyse précédente pour voir ce qui a été corrigé/est nouveau/persiste
 - Support des fichiers volumineux (jusqu'à 300 Mo)
 - Interface utilisateur moderne et intuitive

@@ -83,6 +83,9 @@ class CHECKERS_OT_run_analysis(bpy.types.Operator):
         props.carbon_total = result["carbon_footprint"]["total"]
         lot = result["lots"][0]
         props.lot_description = lot["corps_etat"]
+        props.rules_description = " + ".join(
+            f"{kind} « {os.path.basename(path)} »"
+            for kind, path in (("Excel", props.rules_path), ("IDS", props.ids_path)) if path)
         props.has_rules = lot["has_rules"]
         ids = result.get("ids")
         props.ids_pass_rate = ids["global_pass_rate"] if ids and ids["global_pass_rate"] is not None else -1.0
@@ -90,6 +93,7 @@ class CHECKERS_OT_run_analysis(bpy.types.Operator):
         props.anomalies.clear()
         for anomaly in sorted(result["anomalies"], key=lambda a: -a["count"]):
             item = props.anomalies.add()
+            item.lot = anomaly["lot"]
             item.floor = str(anomaly["floor"])
             item.ifc_class = anomaly["ifc_class"]
             item.pset = anomaly["pset"]
@@ -203,8 +207,50 @@ class CHECKERS_OT_export_report(bpy.types.Operator, ExportHelper):
         return {"FINISHED"}
 
 
+class CHECKERS_OT_export_bcf(bpy.types.Operator, ExportHelper):
+    bl_idname = "checkers.export_bcf"
+    bl_label = "Exporter en BCF"
+    bl_description = ("Exporte les anomalies au format BCF 2.1 : un sujet par anomalie, avec les éléments "
+                      "concernés sélectionnés, à transmettre aux maîtres d'œuvre et entreprises")
+
+    filename_ext = ".bcf"
+    filter_glob: bpy.props.StringProperty(default="*.bcf", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        return len(context.scene.checkers.anomalies) > 0
+
+    def execute(self, context):
+        props = context.scene.checkers
+        engine.ensure_lib_on_path()
+        from checkers_core.bcf import write_bcf
+
+        anomalies = [
+            {"lot": a.lot, "floor": a.floor, "ifc_class": a.ifc_class, "pset": a.pset,
+             "count": a.count, "guids": [g for g in a.guids.split(";") if g]}
+            for a in props.anomalies
+        ]
+        project_name = None
+        ifc_file = engine.current_ifc()
+        if ifc_file is not None:
+            projects = ifc_file.by_type("IfcProject")
+            project_name = projects[0].Name if projects else None
+        try:
+            stats = write_bcf(self.filepath, anomalies, author=props.bcf_author,
+                              project_name=project_name, rules_description=props.rules_description)
+        except OSError as exc:
+            self.report({"ERROR"}, f"Écriture du BCF impossible : {exc}")
+            return {"CANCELLED"}
+        message = f"BCF enregistré : {stats['topics']} sujet(s), {stats['components']} élément(s)"
+        if stats["skipped_guids"]:
+            message += f" ({stats['skipped_guids']} identifiant(s) invalide(s) ignoré(s))"
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 classes = (
     CHECKERS_OT_run_analysis,
+    CHECKERS_OT_export_bcf,
     CHECKERS_OT_select_anomaly,
     CHECKERS_OT_color_results,
     CHECKERS_OT_reset_colors,

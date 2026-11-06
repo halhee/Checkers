@@ -21,6 +21,9 @@ load_dotenv()
 # Importé après load_dotenv() : les agents IA lisent leur configuration
 # (.env) au moment où ils sont appelés.
 from checkers_core.analysis import process_files
+from checkers_core.bcf import write_bcf
+
+BCF_FILENAME = 'output_anomalies.bcf'
 
 app = Flask(__name__)
 
@@ -309,8 +312,27 @@ def upload():
         print("Starting analysis...")
         try:
             ids_display_name = secure_filename(ids_file.filename) if ids_file is not None else None
+            # collect_elements : GlobalId par anomalie, nécessaires à l'export
+            # BCF ci-dessous ; retirés ensuite du résultat pour ne pas alourdir
+            # la réponse JSON ni l'historique.
             results = process_files(analysis_dir, lots, excel_path, output_path, label=label,
-                                    ids_file_path=ids_path, ids_filename=ids_display_name)
+                                    ids_file_path=ids_path, ids_filename=ids_display_name,
+                                    collect_elements=True)
+            anomalies_with_guids = results["anomalies"]
+            results["anomalies"] = [{k: v for k, v in a.items() if k != "guids"} for a in anomalies_with_guids]
+            results.pop("elements", None)
+            results["bcf_available"] = False
+            try:
+                rules_description = " + ".join(
+                    f"{kind} « {secure_filename(f.filename)} »"
+                    for kind, f in (("Excel", excel_file), ("IDS", ids_file)) if f is not None)
+                write_bcf(os.path.join(analysis_dir, BCF_FILENAME), anomalies_with_guids,
+                          project_name=results["label"], rules_description=rules_description)
+                results["bcf_available"] = True
+            except Exception as e:
+                # Export complémentaire : le rapport Excel reste la référence,
+                # un échec ici ne doit pas faire échouer l'analyse.
+                print(f"Warning: could not write BCF export: {str(e)}")
             for lot_summary, folder in zip(results["lots"], lot_folders):
                 lot_summary["folder"] = folder
             results["analysis_id"] = analysis_id
@@ -363,6 +385,20 @@ def download(analysis_id):
     except Exception as e:
         print(f"Error during download: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/download_bcf/<analysis_id>')
+def download_bcf(analysis_id):
+    """Anomalies au format BCF 2.1 (voir checkers_core/bcf.py) : un sujet
+    par anomalie, éléments concernés sélectionnés -- à transmettre aux
+    maîtres d'œuvre / entreprises, qui l'ouvrent dans leur outil BIM."""
+    if not _valid_analysis_id(analysis_id):
+        abort(404)
+    bcf_path = os.path.join(TEMP_FOLDER, analysis_id, BCF_FILENAME)
+    if not os.path.isfile(bcf_path):
+        return jsonify({"error": "Export BCF introuvable"}), 404
+    return send_file(bcf_path, as_attachment=True, download_name=f"anomalies_{analysis_id[:8]}.bcf",
+                     mimetype="application/octet-stream")
+
 
 @app.route('/model/<analysis_id>/<lot_folder>')
 def model(analysis_id, lot_folder):

@@ -12,6 +12,7 @@ Vue 3D → barre latérale (`N`) → onglet **Checkers** :
 4. Pour chaque anomalie, le bouton de sélection **sélectionne et cadre** les éléments concernés dans la vue 3D.
 5. **Colorer** : vert = conforme, rouge = non conforme. Les éléments non contrôlés gardent leur couleur. **Réinitialiser** restaure les couleurs d'origine.
 6. **Enregistrer le rapport Excel** : rapport complet (Résumé, Détails, Empreinte carbone, Comparatif, IDS, Fiche de Recette).
+7. **Exporter en BCF** : un sujet BCF 2.1 par anomalie, avec les éléments concernés sélectionnés et colorés en rouge, à transmettre aux maîtres d'œuvre et aux entreprises. Le fichier s'ouvre dans BIMcollab, Solibri, Revit/Navisworks (via plugin) ou dans le module BCF de Bonsai. Renseignez **Auteur BCF**, en général une adresse e-mail. Les points de vue n'ont pas de caméra : l'outil de destination cadre lui-même la sélection.
 
 Différences avec l'application web : pas de préconisations IA (CrewAI/Ollama), pas d'historique ni de comparaison avant/après, et un seul lot par analyse (le modèle ouvert).
 
@@ -39,7 +40,7 @@ checkers_bonsai/
 ├── blender_manifest.toml   # manifeste d'extension Blender (4.2+)
 ├── __init__.py             # enregistrement
 ├── engine.py               # lien avec Bonsai et checkers_core (sans bpy, testable hors Blender)
-├── operators.py            # analyse, sélection, coloration, export
+├── operators.py            # analyse, sélection, coloration, export Excel et BCF
 ├── props.py                # propriétés de scène (fichiers, résultats, anomalies)
 ├── ui.py                   # panneau et liste des anomalies
 └── lib/                    # généré par build.py

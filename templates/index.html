@@ -121,7 +121,7 @@
             font-size: 1.2rem;
             color: #FFFFFF;
         }
-        #downloadButton {
+        #downloadButton, #bcfButton {
             display: none;
         }
         #dashboard {
@@ -485,6 +485,8 @@
 
             <button type="submit" class="btn-primary">Analyser</button>
             <button type="button" id="downloadButton" class="btn-success" onclick="downloadReport()">Télécharger le rapport Excel</button>
+            <button type="button" id="bcfButton" class="btn-success" onclick="downloadBcf()"
+                    title="Un sujet BCF par anomalie, avec les éléments concernés sélectionnés -- à ouvrir dans BIMcollab, Solibri, Revit, Bonsai...">Télécharger les anomalies (BCF)</button>
         </form>
 
         <div id="loading">Analyse en cours...</div>
@@ -756,6 +758,7 @@
             loading.style.display = 'block';
             dashboard.style.display = 'none';
             downloadButton.style.display = 'none';
+            document.getElementById('bcfButton').style.display = 'none';
             
             fetch('/upload', {
                 method: 'POST',
@@ -773,6 +776,7 @@
                 loading.style.display = 'none';
                 dashboard.style.display = 'block';
                 downloadButton.style.display = 'block';
+                document.getElementById('bcfButton').style.display = data.bcf_available ? 'block' : 'none';
                 switchTab('results');
 
                 // Store the analysis ID
@@ -1263,6 +1267,14 @@
                 return;
             }
             window.location.href = `/download/${currentAnalysisId}`;
+        }
+
+        function downloadBcf() {
+            if (!currentAnalysisId) {
+                alert('Aucune analyse en cours');
+                return;
+            }
+            window.location.href = `/download_bcf/${currentAnalysisId}`;
         }
 
         // --- Visionneuse 3D ---
