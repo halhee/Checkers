@@ -38,6 +38,16 @@ def current_ifc_path() -> str:
         return ""
 
 
+def has_unsaved_changes(scene):
+    """True si Bonsai signale des modifications IFC non enregistrées, False
+    s'il n'y en a pas, None si l'information n'est pas disponible. Sert à
+    avertir que l'empreinte du fichier sur disque ne décrit plus exactement
+    le modèle contrôlé."""
+    props = getattr(scene, "BIMProperties", None)
+    dirty = getattr(props, "is_dirty", None)
+    return dirty if isinstance(dirty, bool) else None
+
+
 def objects_for_guids(guids):
     """(objets Blender, nombre d'éléments sans objet dans la scène)."""
     tool, ifc_file = bonsai_tool(), current_ifc()

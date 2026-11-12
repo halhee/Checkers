@@ -53,6 +53,7 @@ def model_info(ifc_file, path: str = "") -> dict:
     info = {
         "schema": _header_value(lambda: ifc_file.schema_identifier) or _header_value(lambda: ifc_file.schema),
         "project": (projects[0].Name or "") if projects else "",
+        "project_guid": (projects[0].GlobalId or "") if projects else "",
         "originating_system": _header_value(lambda: file_name.originating_system),
         "author": _header_value(lambda: file_name.author),
         "organization": _header_value(lambda: file_name.organization),

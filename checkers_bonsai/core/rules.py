@@ -8,20 +8,24 @@ Structure attendue :
   d'état ; « ARC, STR » = règle partagée) et onglet « Corps_Etat » (colonnes
   Code, Nom) qui déclare les disciplines.
 
-Lecture avec openpyxl seul (fourni par Bonsai), en lecture seule et sans
-évaluer de formule.
+Le fichier est traité comme une entrée non fiable : taille limitée, archive
+contrôlée avant ouverture (bombe de décompression), lecture seule et sans
+évaluer de formule. openpyxl (fourni par Bonsai) n'est importé qu'au moment
+de la lecture, pour que son absence donne un message clair.
 """
 import os
+import zipfile
 from typing import Optional
 
-from openpyxl import load_workbook
-
 RESERVED_SHEETS = ("Element_Types", "Corps_Etat")
-SUPPORTED_TYPES = {"string": str, "int": int, "float": float, "number": float, "bool": bool}
+SUPPORTED_TYPES = ("string", "int", "float", "number", "bool")
+TYPE_LABELS = {bool: "booléen", int: "entier", float: "nombre", str: "texte"}
 
-# Un fichier de règles fait quelques dizaines de Ko : au-delà, refus net
-# plutôt qu'un chargement interminable dans Blender.
+# Un fichier de règles fait quelques dizaines de Ko. Au-delà de ces plafonds,
+# refus net plutôt qu'un chargement interminable dans Blender.
 MAX_RULES_BYTES = 20 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 2000
 
 
 class RulesFileError(ValueError):
@@ -55,11 +59,28 @@ def applies_to(corps_etat_cell, code: Optional[str]) -> bool:
     return not codes or code.upper() in codes
 
 
-def _open(path: str):
+def check_archive(path: str) -> None:
+    """Refuse un .xlsx qui n'est pas une archive saine : un fichier de
+    quelques Ko peut se décompresser en plusieurs Go."""
     if not os.path.isfile(path):
         raise RulesFileError(f"Fichier de règles introuvable : {path}")
     if os.path.getsize(path) > MAX_RULES_BYTES:
         raise RulesFileError("Fichier de règles trop volumineux")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+    except (zipfile.BadZipFile, OSError):
+        raise RulesFileError("Le fichier de règles n'est pas un classeur Excel (.xlsx) valide")
+    if len(members) > MAX_ARCHIVE_MEMBERS or sum(m.file_size for m in members) > MAX_UNCOMPRESSED_BYTES:
+        raise RulesFileError("Fichier de règles refusé : contenu décompressé anormalement volumineux")
+
+
+def _open(path: str):
+    check_archive(path)
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise RulesFileError("La bibliothèque openpyxl est introuvable : vérifiez que Bonsai est installé et activé")
     try:
         return load_workbook(path, read_only=True, data_only=True)
     except Exception as exc:
@@ -116,11 +137,43 @@ def load_rules(path: str, code: Optional[str] = None) -> dict:
         workbook.close()
 
 
+def flatten(value) -> list:
+    """Valeurs élémentaires d'une propriété : une propriété énumérée ou à
+    liste donne plusieurs valeurs, une propriété bornée un dictionnaire."""
+    if isinstance(value, dict):
+        value = [v for k, v in value.items() if k != "id"]
+    if isinstance(value, (list, tuple, set)):
+        return [item for v in value for item in flatten(v)]
+    return [value]
+
+
+def is_empty(value) -> bool:
+    """Absente, vide ou faite uniquement de blancs."""
+    items = [v for v in flatten(value) if v is not None and not (isinstance(v, str) and not v.strip())]
+    return not items
+
+
+def _matches(value, param_type: str) -> bool:
+    kind = param_type.lower()
+    if kind == "bool":
+        return isinstance(value, bool)
+    if isinstance(value, bool):
+        return False  # True vaut 1 en Python : jamais un nombre ni un texte ici
+    if kind == "int":
+        return isinstance(value, int) or (isinstance(value, float) and value.is_integer())
+    if kind in ("float", "number"):
+        return isinstance(value, (int, float))
+    return isinstance(value, str)
+
+
 def value_matches(value, param_type: str) -> bool:
-    """La valeur doit être convertible dans le type attendu (Int accepte
-    3.0, Bool accepte toute valeur renseignée)."""
-    try:
-        SUPPORTED_TYPES[param_type.lower()](value)
-        return True
-    except (ValueError, TypeError):
-        return False
+    """Le type de la valeur IFC doit être celui attendu : Bool = booléen,
+    Int = entier, Float/Number = nombre, String = texte. Un nombre saisi
+    comme texte (« 2.5 ») n'est pas un nombre : il serait inexploitable par
+    un outil de calcul ou de gestion."""
+    return all(_matches(v, param_type) for v in flatten(value) if v is not None)
+
+
+def found_type(value) -> str:
+    values = [v for v in flatten(value) if v is not None]
+    return TYPE_LABELS.get(type(values[0]), type(values[0]).__name__) if values else "vide"

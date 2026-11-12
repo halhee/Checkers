@@ -3,7 +3,7 @@ from collections import defaultdict
 
 import ifcopenshell.util.element
 
-from .rules import value_matches
+from .rules import found_type, is_empty, value_matches
 
 MISSING_PSET = "PSet absent"
 MISSING_PARAM = "Paramètre absent ou vide"
@@ -14,19 +14,20 @@ MAX_FINDINGS = 50000
 
 def _elements_by_rule_class(ifc_file, classes, warnings):
     """{élément: classe de règle}. Les sous-classes sont incluses (une règle
-    IfcWall s'applique aussi à IfcWallStandardCase en IFC2X3) ; si plusieurs
-    classes déclarées correspondent, la plus précise l'emporte."""
-    assignment = {}
+    IfcWall s'applique aussi à IfcWallStandardCase en IFC2X3). Si plusieurs
+    classes déclarées couvrent le même élément, la plus précise l'emporte :
+    c'est celle qui regroupe le moins d'éléments, puisqu'une sous-classe est
+    toujours incluse dans sa classe parente."""
+    by_class = {}
     for rule_class in classes:
         try:
-            elements = ifc_file.by_type(rule_class)
+            by_class[rule_class] = ifc_file.by_type(rule_class)
         except Exception:
             warnings.append(f"Classe « {rule_class} » inconnue du schéma {ifc_file.schema} : ignorée")
-            continue
-        for element in elements:
-            current = assignment.get(element)
-            if current is None or element.is_a() == rule_class:
-                assignment[element] = rule_class
+    assignment = {}
+    for rule_class in sorted(by_class, key=lambda c: len(by_class[c]), reverse=True):
+        for element in by_class[rule_class]:
+            assignment[element] = rule_class
     return assignment
 
 
@@ -46,6 +47,7 @@ def check_psets(ifc_file, rules: dict, level_of) -> dict:
 
     for element, rule_class in assignment.items():
         required = rules["psets"].get(rule_class, {})
+        # get_psets inclut les propriétés héritées du type et les quantités.
         psets = ifcopenshell.util.element.get_psets(element) if required else {}
         level = level_of(element)
         problems = []
@@ -56,10 +58,11 @@ def check_psets(ifc_file, rules: dict, level_of) -> dict:
                 continue
             for param, param_type in params.items():
                 value = values.get(param)
-                if value is None or (isinstance(value, str) and not value.strip()):
+                if is_empty(value):
                     problems.append((pset_name, param, "", MISSING_PARAM))
                 elif not value_matches(value, param_type):
-                    problems.append((pset_name, param, value, f"Type incorrect (attendu {param_type})"))
+                    problems.append((pset_name, param, value,
+                                     f"Type incorrect (attendu {param_type}, trouvé {found_type(value)})"))
 
         guid = element.GlobalId
         if not problems:

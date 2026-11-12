@@ -2,14 +2,14 @@
 OWASP "CSV Injection"). openpyxl interprète automatiquement toute valeur de
 cellule de type `str` commençant par '=', '+', '-' ou '@' comme une formule
 vivante (`cell.data_type` passe à `'f'`), y compris quand cette valeur vient
-entièrement de données utilisateur : un nom de lot saisi au formulaire, ou un
-nom d'élément/d'étage/de matériau lu dans un fichier IFC uploadé (format
-texte librement éditable par quiconque fournit le fichier).
+entièrement de données extérieures : un nom de lot saisi dans le panneau, ou
+un nom d'élément, d'étage ou de local lu dans la maquette IFC (format texte
+librement éditable par quiconque fournit le fichier).
 
-Les rapports générés par Checkers (rapport Excel, Fiche de Recette) sont
+Les classeurs produits par Checkers (fiche de recette, inventaire) sont
 faits pour être ouverts par quelqu'un d'autre que la personne qui a fourni
-les fichiers d'entrée -- exactement le scénario où une formule injectée
-devient exploitable (ex. une formule DDE ou HYPERLINK/WEBSERVICE exécutée à
+la maquette -- exactement le scénario où une formule injectée devient
+exploitable (ex. une formule DDE ou HYPERLINK/WEBSERVICE exécutée à
 l'ouverture par le relecteur de la recette)."""
 
 _DANGEROUS_PREFIXES = ('=', '+', '-', '@', '\t', '\r')

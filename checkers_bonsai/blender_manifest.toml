@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "checkers_bonsai"
-version = "0.3.0"
+version = "0.4.0"
 name = "Checkers - recette IFC"
-tagline = "Recette IFC hors ligne : IDS, PSet, fiche de recette, BCF"
+tagline = "Recette IFC hors ligne : structure, IDS, PSet, suivi, BCF"
 maintainer = "Checkers <khchiche.zakaria@gmail.com>"
 type = "add-on"
 website = "https://github.com/halhee/Checkers"
@@ -17,9 +17,10 @@ blender_version_min = "4.2.0"
 license = ["SPDX:MIT"]
 
 # Aucune permission « network » : l'extension ne fait aucun accès réseau
-# (fonctionnement hors ligne garanti, voir tests/test_bonsai_extension.py).
+# (fonctionnement hors ligne garanti, voir tests/test_extension.py).
+# Blender limite chaque justification à 64 caractères, sans ponctuation finale.
 [permissions]
-files = "Lecture des référentiels (IDS, Excel) et enregistrement de la fiche de recette et du BCF"
+files = "Lecture des référentiels, écriture des livrables de recette"
 
 [build]
 paths_exclude_pattern = ["__pycache__/", "*.pyc"]

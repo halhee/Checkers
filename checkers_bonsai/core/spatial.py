@@ -24,9 +24,10 @@ def _parent(entity):
     rel = _first(getattr(entity, "ContainedInStructure", None) or ())
     if rel is not None:
         return rel.RelatingStructure
-    rel = _first(getattr(entity, "Decomposes", None) or ())
-    if rel is not None:
-        return rel.RelatingObject
+    for inverse in ("Decomposes", "Nests"):  # agrégation, puis imbrication (IFC4)
+        rel = _first(getattr(entity, inverse, None) or ())
+        if rel is not None:
+            return rel.RelatingObject
     return None
 
 

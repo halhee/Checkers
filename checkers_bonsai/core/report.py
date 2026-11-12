@@ -1,5 +1,6 @@
-"""Rapport Excel de recette : Fiche de recette (à signer), détail des
-non-conformités PSet, synthèse et détail IDS.
+"""Rapport Excel de recette : fiche de recette (à signer), puis le détail
+des contrôles de structure, de l'IDS, des PSet et de l'évolution depuis la
+recette précédente.
 
 La mention de confidentialité éventuelle (ex. « CONFIDENTIEL ») figure
 en tête de la fiche et dans l'en-tête et le pied de page de chaque onglet
@@ -25,8 +26,12 @@ FILL = {
     REJECTED: PatternFill("solid", start_color="FFC7CE"),
     INCONCLUSIVE: PatternFill("solid", start_color="EDEDED"),
 }
+STATUS_LABELS = {"ok": "Conforme", "ko": "Non conforme", "erreur": "Non contrôlé"}
+STATUS_FILLS = {"ok": FILL[VALIDATED], "ko": FILL[REJECTED], "erreur": FILL[INCONCLUSIVE]}
 WRAP_LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 WRAP_CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+NOTE = Font(size=9, italic=True, color="666666")
+PCT = {3: "0.0%"}
 
 
 class _Sheet:
@@ -37,6 +42,7 @@ class _Sheet:
         self.ws.title = title
         self.cols = len(widths)
         self.row = 1
+        self.sections = 0
         for i, width in enumerate(widths, 1):
             self.ws.column_dimensions[get_column_letter(i)].width = width
         setup = self.ws.page_setup
@@ -59,8 +65,11 @@ class _Sheet:
             self.ws.row_dimensions[self.row].height = height
         self.row += 1
 
-    def section(self, text):
+    def section(self, text, numbered=True):
         self.row += 1
+        if numbered:
+            self.sections += 1
+            text = f"{self.sections}. {text}"
         self.banner(text, Font(size=12, bold=True), FILL["section"])
 
     def header(self, labels):
@@ -95,58 +104,84 @@ def _pct(rate):
     return "—" if rate is None else rate
 
 
-PCT = {3: "0.0%"}
+def _groups(result, source) -> int:
+    return sum(1 for a in result.anomalies if a["source"] == source)
+
+
+def _source_label(anomaly) -> str:
+    return f"{anomaly['source']} – {anomaly['severity']}" if anomaly.get("severity") else anomaly["source"]
 
 
 def _fiche(workbook, result: RecetteResult):
     s = result.settings
-    sheet = _Sheet(workbook, "Fiche de recette", [26, 22, 30, 34, 16], s.marking, first=True)
+    sheet = _Sheet(workbook, "Fiche de recette", [26, 22, 30, 34, 18], s.marking, first=True)
     if s.marking:
         sheet.banner(s.marking, Font(size=12, bold=True, color="FFFFFF"), FILL["marking"], align=WRAP_CENTER)
     sheet.banner("FICHE DE RECETTE DE MAQUETTE NUMÉRIQUE (IFC)", Font(size=14, bold=True, color="FFFFFF"),
                  FILL["title"], height=28, align=WRAP_CENTER)
 
-    sheet.section("1. Identification")
+    sheet.section("Identification")
     model = result.model
     sheet.field("Projet", model.get("project"))
     sheet.field("Lot / corps d'état", s.lot)
     sheet.field("Phase / jalon", s.phase)
     sheet.field("Date de la recette", result.date.strftime("%d/%m/%Y %H:%M"))
     sheet.field("Recette réalisée par", s.tester)
-    sheet.field("Référentiel(s)", describe_referentials(result))
+    sheet.field("Contrôles réalisés", describe_referentials(result))
 
-    sheet.section("2. Résultat")
-    sheet.header(["Contrôle", "Éléments contrôlés", "Taux de conformité", "Anomalies (groupes)", "Verdict"])
+    sheet.section("Résultat")
+    sheet.header(["Contrôle", "Vérifications", "Taux de conformité", "Anomalies (groupes)", "Verdict"])
+    if result.structure is not None:
+        checks = result.structure["checks"]
+        done = [c for c in checks if c["status"] != "erreur"]
+        rate = sum(1 for c in done if c["status"] == "ok") / len(done) if done else None
+        sheet.line(["Structure du modèle", len(done), _pct(rate), _groups(result, "Structure"),
+                    result.structure_verdict], fills={5: FILL[result.structure_verdict]}, formats=PCT)
     if result.ids_result is not None:
         r = result.ids_result
-        sheet.line(["IDS", r["applicable_total"], _pct(r["pass_rate"]),
-                    sum(1 for a in result.anomalies if a["source"] == "IDS"), result.ids_verdict or INCONCLUSIVE],
+        sheet.line(["IDS", r["applicable_total"], _pct(r["pass_rate"]), _groups(result, "IDS"),
+                    result.ids_verdict or INCONCLUSIVE],
                    fills={5: FILL[result.ids_verdict or INCONCLUSIVE]}, formats=PCT)
     if result.pset is not None:
-        sheet.line(["Règles Excel (PSet)", result.pset["checked"], _pct(result.pset_rate),
-                    sum(1 for a in result.anomalies if a["source"] == "PSet"), result.pset_verdict or INCONCLUSIVE],
+        sheet.line(["Règles Excel (PSet)", result.pset["checked"], _pct(result.pset_rate), _groups(result, "PSet"),
+                    result.pset_verdict or INCONCLUSIVE],
                    fills={5: FILL[result.pset_verdict or INCONCLUSIVE]}, formats=PCT)
     sheet.row += 1
     sheet.banner(f"VERDICT : {result.verdict.upper()}", Font(size=13, bold=True), FILL[result.verdict],
                  height=24, align=WRAP_CENTER)
-    sheet.banner(f"Seuils : ≥ {s.threshold_ok:.0%} validé ; ≥ {s.threshold_reserve:.0%} validé avec réserves ; "
-                 f"rejeté en dessous. Une spécification IDS obligatoire sans aucun élément concerné entraîne le rejet.",
-                 Font(size=9, italic=True, color="666666"))
+    sheet.banner("Vérifications : nombre de contrôles pour la structure, de couples élément × spécification pour "
+                 "l'IDS, d'éléments pour les règles Excel.", NOTE)
+    sheet.banner(f"Seuils IDS et règles Excel : ≥ {s.threshold_ok:.0%} validé ; ≥ {s.threshold_reserve:.0%} validé "
+                 f"avec réserves ; rejeté en dessous. Une spécification IDS obligatoire sans aucun élément concerné "
+                 f"entraîne le rejet. Structure : un constat bloquant entraîne le rejet, un constat majeur des "
+                 f"réserves. Le verdict global est le plus sévère.", NOTE, height=38)
     for warning in result.warnings:
         sheet.banner(f"⚠ {warning}", Font(size=10, color="9C5700"))
 
-    sheet.section(f"3. Anomalies ouvertes ({len(result.anomalies)} groupes, "
-                  f"{len(result.invalid_guids)} éléments non conformes)")
+    if result.evolution is not None:
+        e = result.evolution
+        sheet.section(f"Évolution depuis la recette du {e['previous_date']:%d/%m/%Y}")
+        sheet.field("Recette précédente", " – ".join(v for v in (e["previous_file"], e["previous_verdict"]) if v))
+        removed = f" (dont {e['removed_count']} par suppression de l'élément)" if e["removed_count"] else ""
+        sheet.field("Anomalies levées", f"{e['resolved_count']}{removed}")
+        sheet.field("Anomalies persistantes", str(e["persistent_count"]))
+        sheet.field("Anomalies nouvelles", str(e["new_count"]))
+        sheet.banner("Décompte par élément et par exigence ; détail dans l'onglet « Évolution ».", NOTE)
+
+    sheet.section(f"Anomalies ouvertes ({len(result.anomalies)} groupes, "
+                  f"{len(result.invalid_guids)} éléments concernés)")
     sheet.header(["Niveau / partie", "Classe IFC", "Exigence non respectée", "Source", "Éléments"])
     for a in result.anomalies:
-        sheet.line([a["level"], a["ifc_class"], a["requirement"], a["source"], a["count"]])
+        sheet.line([a["level"], a["ifc_class"], a["requirement"], _source_label(a), a["count"]])
     if not result.anomalies:
         sheet.banner("Aucune anomalie.")
 
-    sheet.section("4. Traçabilité")
+    sheet.section("Traçabilité")
     f = model.get("file") or {}
     sheet.field("Maquette", f.get("name") or "Projet Bonsai non enregistré sur disque")
     sheet.field("Empreinte SHA-256", f.get("sha256"))
+    unsaved = {True: "Oui : l'empreinte ne décrit pas exactement le modèle contrôlé", False: "Non"}
+    sheet.field("Modifications non enregistrées", unsaved.get(result.unsaved_changes, "Non déterminé"))
     sheet.field("Schéma IFC", model.get("schema"))
     sheet.field("Application auteur", model.get("originating_system"))
     sheet.field("Auteur / organisation", " / ".join(v for v in (model.get("author"), model.get("organization")) if v))
@@ -156,9 +191,9 @@ def _fiche(workbook, result: RecetteResult):
             sheet.field(f"{label} (SHA-256)", f"{info.get('name', '')} – {info.get('sha256', '')}")
     sheet.banner("L'analyse porte sur le modèle ouvert dans Bonsai au moment de la recette ; l'empreinte est "
                  "celle du fichier enregistré sur disque. Enregistrer la maquette avant la recette pour qu'ils "
-                 "coïncident.", Font(size=9, italic=True, color="666666"))
+                 "coïncident.", NOTE)
 
-    sheet.section("5. Validation")
+    sheet.section("Validation")
     sheet.banner("Décision :  ☐ Validé     ☐ Validé avec réserves     ☐ Rejeté", height=22)
     sheet.banner("Réserves / observations :", height=60)
     sheet.banner("Nom, fonction :                                        Date :                    Visa :", height=36)
@@ -167,9 +202,18 @@ def _fiche(workbook, result: RecetteResult):
         sheet.banner(s.marking, Font(size=12, bold=True, color="FFFFFF"), FILL["marking"], align=WRAP_CENTER)
 
 
+def _structure_sheet(workbook, result: RecetteResult):
+    sheet = _Sheet(workbook, "Structure", [8, 44, 14, 18, 70], result.settings.marking)
+    sheet.header(["Code", "Contrôle", "Gravité", "Résultat", "Constat"])
+    for check in result.structure["checks"]:
+        sheet.line([check["code"], check["title"], check["severity"], STATUS_LABELS[check["status"]],
+                    check["message"]], fills={4: STATUS_FILLS[check["status"]]})
+    sheet.ws.freeze_panes = "A2"
+
+
 def _pset_details(workbook, result: RecetteResult):
     pset = result.pset
-    sheet = _Sheet(workbook, "Détail PSet", [20, 22, 24, 26, 14, 28, 24, 18, 30], result.settings.marking)
+    sheet = _Sheet(workbook, "Détail PSet", [20, 22, 24, 26, 14, 28, 24, 18, 34], result.settings.marking)
     sheet.header(["Niveau / partie", "Classe IFC", "GlobalId", "Nom", "Repère (Tag)", "PSet", "Paramètre",
                   "Valeur", "Problème"])
     for f in pset["findings"]:
@@ -178,8 +222,7 @@ def _pset_details(workbook, result: RecetteResult):
     if not pset["findings"]:
         sheet.banner("Aucune non-conformité PSet.")
     if pset["truncated"]:
-        sheet.banner("Liste tronquée (les compteurs de la fiche de recette restent exacts).",
-                     Font(italic=True, color="666666"))
+        sheet.banner("Liste tronquée (les compteurs de la fiche de recette restent exacts).", NOTE)
     sheet.ws.freeze_panes = "A2"
     sheet.ws.auto_filter.ref = f"A1:I{max(sheet.row - 1, 1)}"
 
@@ -189,7 +232,7 @@ def _ids_sheet(workbook, result: RecetteResult):
     sheet = _Sheet(workbook, "IDS", [34, 34, 16, 18, 24, 24, 40, 40], result.settings.marking)
     sheet.banner(f"IDS : {result.ids.get('name', '')}" + (f" – {result.ids['title']}" if result.ids.get("title") else ""),
                  Font(bold=True))
-    sheet.section("Synthèse par spécification")
+    sheet.section("Synthèse par spécification", numbered=False)
     sheet.header(["Spécification", "Identifiant", "Cardinalité", "Statut", "Applicables", "Non conformes",
                   "Conformes", "Exigences non respectées"])
     status_fill = {"conforme": FILL[VALIDATED], "non_conforme": FILL[REJECTED], "ignoree": FILL[INCONCLUSIVE]}
@@ -197,7 +240,7 @@ def _ids_sheet(workbook, result: RecetteResult):
         sheet.line([spec["name"], spec["identifier"], ids_check.CARDINALITY_LABELS[spec["cardinality"]],
                     ids_check.STATUS_LABELS[spec["status"]], spec["applicable"], spec["failed"], spec["passed"],
                     spec["failed_requirements"]], fills={4: status_fill[spec["status"]]})
-    sheet.section("Détail des éléments non conformes")
+    sheet.section("Détail des éléments non conformes", numbered=False)
     sheet.header(["Spécification", "Exigence", "Niveau / partie", "Classe IFC", "GlobalId", "Nom", "Raison"])
     for d in r["details"]:
         sheet.line([d["specification"], d["requirement"], d["level"], d["ifc_class"], d["guid"], d["name"],
@@ -205,12 +248,33 @@ def _ids_sheet(workbook, result: RecetteResult):
     if not r["details"]:
         sheet.banner("Aucun élément non conforme.")
     if r["truncated"]:
-        sheet.banner("Liste tronquée (les compteurs restent exacts).", Font(italic=True, color="666666"))
+        sheet.banner("Liste tronquée (les compteurs restent exacts).", NOTE)
+
+
+def _evolution_sheet(workbook, result: RecetteResult):
+    e = result.evolution
+    sheet = _Sheet(workbook, "Évolution", [16, 20, 22, 44, 14, 12, 18], result.settings.marking)
+    sheet.header(["Statut", "Niveau / partie", "Classe IFC", "Exigence", "Source", "Éléments",
+                  "Dont éléments supprimés"])
+    rows = [("Levée", FILL[VALIDATED], e["resolved"]), ("Nouvelle", FILL[REJECTED], e["new"]),
+            ("Persistante", FILL[RESERVED], e["persistent"])]
+    for label, fill, groups in rows:
+        for g in groups:
+            sheet.line([label, g["level"], g["ifc_class"], g["requirement"], g["source"], g["count"],
+                        g["removed"] or ""], fills={1: fill})
+    if not any(groups for _, _, groups in rows):
+        sheet.banner("Aucune anomalie, ni à la recette précédente ni à celle-ci.")
+    sheet.ws.freeze_panes = "A2"
+    sheet.ws.auto_filter.ref = f"A1:G{max(sheet.row - 1, 1)}"
 
 
 def write_report(result: RecetteResult, path: str) -> None:
     workbook = Workbook()
     _fiche(workbook, result)
+    if result.evolution is not None:
+        _evolution_sheet(workbook, result)
+    if result.structure is not None:
+        _structure_sheet(workbook, result)
     if result.ids_result is not None:
         _ids_sheet(workbook, result)
     if result.pset is not None:

@@ -1,4 +1,5 @@
-"""Recette d'une maquette IFC : contrôle IDS et/ou règles Excel, verdict.
+"""Recette d'une maquette IFC : contrôles de structure, IDS et règles
+Excel, verdict, et comparaison avec la recette précédente.
 
 Indépendant de Blender : prend un modèle `ifcopenshell.file` déjà ouvert
 (celui de Bonsai) et des chemins de fichiers.
@@ -10,7 +11,9 @@ from datetime import datetime
 from typing import Optional
 
 from . import ids as ids_check
+from . import journal
 from . import rules as rules_file
+from . import structure as structure_check
 from .psets import check_psets
 from .spatial import LevelCache
 from .trace import file_info, model_info
@@ -20,6 +23,9 @@ RESERVED = "Validé avec réserves"
 REJECTED = "Rejeté"
 INCONCLUSIVE = "Non concluant"
 _SEVERITY = {VALIDATED: 0, RESERVED: 1, REJECTED: 2}
+# Ordre d'affichage des anomalies : les constats bloquants d'abord, les
+# constats mineurs en dernier ; les écarts IDS et PSet entre les deux.
+_ANOMALY_RANK = {structure_check.BLOCKING: 0, structure_check.MAJOR: 1, None: 1, structure_check.MINOR: 2}
 
 
 @dataclass
@@ -27,6 +33,8 @@ class RecetteSettings:
     rules_path: str = ""
     corps_etat: Optional[str] = None
     ids_path: str = ""
+    check_structure: bool = True
+    previous_path: str = ""          # journal JSON de la recette précédente
     lot: str = ""
     phase: str = ""
     tester: str = ""
@@ -44,12 +52,16 @@ class RecetteResult:
     ids: dict = field(default_factory=dict)          # fichier IDS : infos + titre
     pset: Optional[dict] = None
     ids_result: Optional[dict] = None
+    structure: Optional[dict] = None
+    evolution: Optional[dict] = None                 # comparaison avec la recette précédente
     anomalies: list = field(default_factory=list)
     valid_guids: set = field(default_factory=set)
     invalid_guids: set = field(default_factory=set)
     verdict: str = INCONCLUSIVE
     pset_verdict: Optional[str] = None
     ids_verdict: Optional[str] = None
+    structure_verdict: Optional[str] = None
+    unsaved_changes: Optional[bool] = None
     warnings: list = field(default_factory=list)
     duration_s: float = 0.0
 
@@ -82,22 +94,57 @@ def ids_verdict(result: dict, settings: RecetteSettings) -> Optional[str]:
     return rate_verdict(result["pass_rate"], settings)
 
 
-def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "") -> RecetteResult:
+def structure_verdict(result: dict) -> str:
+    if result["blocking"]:
+        return REJECTED
+    if result["major"]:
+        return RESERVED
+    return VALIDATED
+
+
+def _check_settings(settings: RecetteSettings) -> None:
+    if not (settings.rules_path or settings.ids_path or settings.check_structure):
+        raise ValueError("Aucun contrôle demandé : choisissez un IDS, des règles Excel ou le contrôle de structure.")
+    if not 0.0 <= settings.threshold_reserve <= settings.threshold_ok <= 1.0:
+        raise ValueError("Seuils incohérents : le seuil « avec réserves » doit être inférieur ou égal au seuil "
+                         "« validé », tous deux entre 0 et 100 %.")
+
+
+def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
+                unsaved_changes: Optional[bool] = None) -> RecetteResult:
     if ifc_file is None:
         raise ValueError("Aucun modèle IFC ouvert dans Bonsai.")
-    if not settings.rules_path and not settings.ids_path:
-        raise ValueError("Choisissez au moins un référentiel : fichier IDS et/ou règles Excel.")
+    _check_settings(settings)
+    # Lu avant les contrôles : un journal illisible doit arrêter tout de
+    # suite, pas après plusieurs minutes de calcul.
+    previous = journal.load_record(settings.previous_path) if settings.previous_path else None
+
     start = time.time()
-    result = RecetteResult(settings=settings, date=datetime.now(), model=model_info(ifc_file, model_path))
+    result = RecetteResult(settings=settings, date=datetime.now(), model=model_info(ifc_file, model_path),
+                           unsaved_changes=unsaved_changes)
     level_of = LevelCache()
-    anomalies = {}
+    anomalies = []
+
+    def add(key, source, guids, severity=None, count=None):
+        level, ifc_class, requirement = key
+        anomalies.append({"level": level, "ifc_class": ifc_class, "requirement": requirement, "source": source,
+                          "severity": severity, "count": len(guids) if count is None else count,
+                          "guids": sorted(guids)})
+
+    if settings.check_structure:
+        result.structure = structure_check.check_structure(ifc_file, level_of)
+        result.structure_verdict = structure_verdict(result.structure)
+        for key, item in result.structure["anomalies"].items():
+            add(key, "Structure", item["guids"], item["severity"], item["count"])
 
     if settings.ids_path:
         document = ids_check.load_ids(settings.ids_path)
         result.ids = {**file_info(settings.ids_path), "title": ids_check.ids_title(document)}
         result.ids_result = ids_check.check_ids(document, ifc_file, level_of)
         result.ids_verdict = ids_verdict(result.ids_result, settings)
-        anomalies.update({key: ("IDS", guids) for key, guids in result.ids_result["anomalies"].items()})
+        result.warnings.extend(result.ids_result["warnings"])
+        for key, guids in result.ids_result["anomalies"].items():
+            add(key, "IDS", guids)
         if result.ids_result["specs_checked"] == 0:
             result.warnings.append(f"Aucune spécification de l'IDS ne vise le schéma {result.model['schema']}.")
 
@@ -119,22 +166,39 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "") -> Re
         else:
             result.warnings.append("Aucun élément du modèle n'est concerné par les règles Excel.")
         for key, guids in result.pset["anomalies"].items():
-            anomalies[key] = ("PSet", guids)
+            add(key, "PSet", guids)
 
-    result.anomalies = sorted(
-        ({"level": level, "ifc_class": ifc_class, "requirement": requirement, "source": source,
-          "count": len(guids), "guids": sorted(guids)}
-         for (level, ifc_class, requirement), (source, guids) in anomalies.items()),
-        key=lambda a: (-a["count"], a["level"], a["ifc_class"], a["requirement"]))
+    result.anomalies = sorted(anomalies, key=lambda a: (
+        _ANOMALY_RANK[a["severity"]], -a["count"], a["level"], a["ifc_class"], a["requirement"]))
 
+    # Rouge : au moins une anomalie. Vert : contrôlé par l'IDS ou les règles
+    # Excel, sans aucune anomalie.
     for anomaly in result.anomalies:
         result.invalid_guids.update(anomaly["guids"])
+    checked = set()
     if result.pset:
         result.invalid_guids.update(result.pset["invalid_guids"])
-        result.valid_guids = set(result.pset["valid_guids"]) - result.invalid_guids
+        checked.update(result.pset["valid_guids"])
+    if result.ids_result:
+        checked.update(result.ids_result["applicable_guids"])
+    result.valid_guids = checked - result.invalid_guids
 
-    verdicts = [v for v in (result.pset_verdict, result.ids_verdict) if v]
+    verdicts = [v for v in (result.structure_verdict, result.pset_verdict, result.ids_verdict) if v]
     result.verdict = max(verdicts, key=_SEVERITY.get) if verdicts else INCONCLUSIVE
+
+    if unsaved_changes:
+        result.warnings.append("Le modèle contient des modifications non enregistrées : l'empreinte du fichier "
+                               "ne décrit pas exactement le modèle contrôlé.")
+    if previous is not None:
+        def element_exists(guid: str) -> bool:
+            try:
+                return ifc_file.by_guid(guid) is not None
+            except Exception:
+                return False
+
+        result.evolution = journal.compare(previous, result, element_exists)
+        result.warnings.extend(result.evolution["warnings"])
+
     result.duration_s = time.time() - start
     return result
 
@@ -146,4 +210,6 @@ def describe_referentials(result: RecetteResult) -> str:
         parts.append(f"IDS « {result.ids.get('name', os.path.basename(result.settings.ids_path))} »{title}")
     if result.rules:
         parts.append(f"Règles Excel « {result.rules.get('name', '')} » ({result.rules['corps_etat']})")
+    if result.structure is not None:
+        parts.append("contrôles de structure")
     return " + ".join(parts)

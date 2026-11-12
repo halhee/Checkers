@@ -1,13 +1,10 @@
 import bpy
 
-from . import bonsai_link
+from . import bonsai_link, operators
 from .props import registry_for
 
-def _pct(rate: float) -> str:
-    return f"{rate * 100:.1f} %".replace(".", ",")
-
-
 VERDICT_ICONS = {"Validé": "CHECKMARK", "Validé avec réserves": "ERROR", "Rejeté": "CANCEL"}
+SOURCE_ICONS = {"IDS": "FILE_TEXT", "PSet": "PROPERTIES", "Structure": "OUTLINER"}
 
 
 class CHECKERS_UL_anomalies(bpy.types.UIList):
@@ -15,7 +12,8 @@ class CHECKERS_UL_anomalies(bpy.types.UIList):
         row = layout.row(align=True)
         row.label(text=str(item.count))
         row.label(text=f"{item.ifc_class} · {item.level}")
-        row.label(text=item.requirement, icon="FILE_TEXT" if item.source == "IDS" else "PROPERTIES")
+        requirement = f"{item.requirement} ({item.severity.lower()})" if item.severity else item.requirement
+        row.label(text=requirement, icon=SOURCE_ICONS.get(item.source, "DOT"))
         row.operator("checkers.select_anomaly", text="", icon="RESTRICT_SELECT_OFF").index = index
 
 
@@ -43,12 +41,14 @@ class _SubPanel(_Panel):
 
 
 class CHECKERS_PT_referentials(_SubPanel, bpy.types.Panel):
-    bl_label = "Référentiels"
+    bl_label = "Contrôles"
     bl_idname = "CHECKERS_PT_referentials"
 
     def draw(self, context):
         props = context.scene.checkers
         col = self.layout.column(align=True)
+        col.prop(props, "check_structure")
+        col.separator()
         row = col.row(align=True)
         row.prop(props, "ids_path")
         row.operator_menu_enum("checkers.use_example_ids", "example", text="", icon="PRESET")
@@ -69,8 +69,9 @@ class CHECKERS_PT_recette(_SubPanel, bpy.types.Panel):
         col.prop(props, "lot")
         col.prop(props, "phase")
         col.prop(props, "tester")
-        col.separator()
         col.prop(props, "marking")
+        col.separator()
+        col.prop(props, "previous_path")
         col.separator()
         row = col.row(align=True)
         row.prop(props, "threshold_ok", text="Validé ≥")
@@ -78,24 +79,28 @@ class CHECKERS_PT_recette(_SubPanel, bpy.types.Panel):
         self.layout.operator("checkers.run_recette", icon="CHECKMARK")
 
 
-class CHECKERS_PT_results(_SubPanel, bpy.types.Panel):
-    bl_label = "Résultats"
-    bl_idname = "CHECKERS_PT_results"
-
+class _ResultPanel(_SubPanel):
     @classmethod
     def poll(cls, context):
         return super().poll(context) and context.scene.checkers.has_result
 
+
+class CHECKERS_PT_results(_ResultPanel, bpy.types.Panel):
+    bl_label = "Résultats"
+    bl_idname = "CHECKERS_PT_results"
+
     def draw(self, context):
         props = context.scene.checkers
         layout = self.layout
+        if operators.is_stale():
+            layout.label(text="Le modèle a changé : relancez la recette.", icon="ERROR")
         box = layout.box()
         box.label(text=f"Verdict : {props.verdict}", icon=VERDICT_ICONS.get(props.verdict, "QUESTION"))
-        if props.ids_rate >= 0:
-            box.label(text=f"IDS : {_pct(props.ids_rate)} conformes ({props.ids_applicable} applicables)")
-        if props.pset_rate >= 0:
-            box.label(text=f"Règles Excel : {_pct(props.pset_rate)} conformes ({props.pset_checked} éléments)")
-        box.label(text=f"{props.invalid_count} élément(s) non conforme(s)")
+        for line in filter(None, props.summary.split("\n")):
+            box.label(text=line)
+        box.label(text=f"{props.invalid_count} élément(s) avec au moins une anomalie")
+        if props.evolution:
+            box.label(text=props.evolution, icon="TIME")
         for warning in filter(None, props.warnings.split("\n")):
             box.label(text=warning, icon="ERROR")
         if props.anomalies:
@@ -105,13 +110,9 @@ class CHECKERS_PT_results(_SubPanel, bpy.types.Panel):
         row.operator("checkers.reset_colors", icon="LOOP_BACK")
 
 
-class CHECKERS_PT_deliverables(_SubPanel, bpy.types.Panel):
-    bl_label = "Livrables"
+class CHECKERS_PT_deliverables(_ResultPanel, bpy.types.Panel):
+    bl_label = "Livrables de recette"
     bl_idname = "CHECKERS_PT_deliverables"
-
-    @classmethod
-    def poll(cls, context):
-        return super().poll(context) and context.scene.checkers.has_result
 
     def draw(self, context):
         props = context.scene.checkers
@@ -122,6 +123,15 @@ class CHECKERS_PT_deliverables(_SubPanel, bpy.types.Panel):
         col.operator("checkers.export_bcf", icon="EXPORT")
 
 
+class CHECKERS_PT_operation(_SubPanel, bpy.types.Panel):
+    bl_label = "Exploitation"
+    bl_idname = "CHECKERS_PT_operation"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        self.layout.operator("checkers.export_inventory", icon="SPREADSHEET")
+
+
 classes = (
     CHECKERS_UL_anomalies,
     CHECKERS_PT_main,
@@ -129,4 +139,5 @@ classes = (
     CHECKERS_PT_recette,
     CHECKERS_PT_results,
     CHECKERS_PT_deliverables,
+    CHECKERS_PT_operation,
 )

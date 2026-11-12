@@ -1,12 +1,18 @@
 """Export des anomalies de Checkers au format BCF 2.1 (BIM Collaboration
 Format, buildingSMART).
 
-Un sujet (topic) BCF par anomalie (niveau, classe IFC, PSet ou
-spécification IDS), avec un point de vue qui sélectionne et colore en rouge
-les éléments concernés. Le fichier .bcf s'ouvre dans les outils des
-maîtres d'œuvre et des entreprises (BIMcollab, Solibri, Revit/Navisworks
-via plugin, Bonsai...) : chaque non-conformité y est rattachée aux objets
-de la maquette, au lieu de vivre seulement dans un tableau Excel.
+Un sujet (topic) BCF par anomalie (niveau, classe IFC, exigence), avec un
+point de vue qui sélectionne et colore en rouge les éléments concernés. Le
+fichier .bcf s'ouvre dans les outils des maîtres d'œuvre et des entreprises
+(BIMcollab, Solibri, Revit/Navisworks via plugin, Bonsai...) : chaque
+non-conformité y est rattachée aux objets de la maquette, au lieu de vivre
+seulement dans un tableau Excel.
+
+Les identifiants des sujets sont stables : la même anomalie (même projet,
+même lot, même niveau, même classe, même exigence) garde le même identifiant
+d'une recette à l'autre. Réimporter le BCF de la livraison suivante met donc
+à jour les sujets existants au lieu de les dupliquer, et les anomalies
+levées depuis la recette précédente sont transmises comme sujets clos.
 
 Version 2.1 plutôt que 3.0 : c'est la plus largement prise en charge par
 les logiciels du marché. Les fichiers produits sont validés contre les
@@ -25,12 +31,25 @@ BCF_VERSION = "2.1"
 # Couleur des éléments non conformes dans les points de vue (RGB hexadécimal,
 # majuscules, comme l'exige visinfo.xsd).
 ANOMALY_COLOR = "E53935"
+PRIORITIES = {"Bloquant": "Critical", "Majeur": "Major", "Mineur": "Minor"}
+OPEN, CLOSED = "Open", "Closed"
 
 # IfcGuid : 22 caractères de l'alphabet base64 d'IFC (visinfo.xsd). Un
 # identifiant non conforme rendrait tout le fichier invalide : il est écarté
 # et compté (voir write_bcf), plutôt que de produire un BCF refusé à
 # l'ouverture.
 _IFC_GUID_RE = re.compile(r"^[0-9A-Za-z_$]{22}$")
+_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/halhee/Checkers/bcf")
+
+
+def stable_guid(*parts: str) -> str:
+    """Identifiant déterministe : mêmes éléments de clé, même identifiant."""
+    return str(uuid.uuid5(_NAMESPACE, "|".join(parts)))
+
+
+def topic_guid(project_key: str, lot: str, anomaly: dict) -> str:
+    return stable_guid(project_key, lot, anomaly.get("source") or "", anomaly["level"], anomaly["ifc_class"],
+                       anomaly["requirement"])
 
 
 def _xml(root: ET.Element) -> bytes:
@@ -66,9 +85,12 @@ def topic_title(anomaly: dict) -> str:
 
 
 def topic_description(anomaly: dict, lot: str = "", referentials: str = "", marking: str = "") -> str:
-    requirement = anomaly["requirement"]
-    if anomaly.get("source") == "IDS":
-        what = f"Non-conformité à la spécification {requirement[len('IDS : '):] if requirement.startswith('IDS : ') else requirement}."
+    requirement, source = anomaly["requirement"], anomaly.get("source")
+    if source == "IDS":
+        name = requirement[len("IDS : "):] if requirement.startswith("IDS : ") else requirement
+        what = f"Non-conformité à la spécification {name}."
+    elif source == "Structure":
+        what = f"Contrôle de structure non satisfait : {requirement}."
     else:
         what = f"PSet « {requirement} » absent ou incomplet (paramètre manquant, vide ou de type incorrect)."
     lines = [marking] if marking else []
@@ -79,28 +101,36 @@ def topic_description(anomaly: dict, lot: str = "", referentials: str = "", mark
     ]
     if referentials:
         lines.append(f"Référentiel : {referentials}.")
-    lines.append("Détail élément par élément : rapport de recette Checkers (onglets « Détail PSet » / « IDS »).")
+    lines.append("Détail élément par élément : fiche de recette Checkers (onglets de détail).")
     return "\n".join(lines)
 
 
-def _markup_file(topic_guid: str, viewpoint_guid: str, anomaly: dict, index: int, author: str, date: str,
-                 lot: str, referentials: str, marking: str, labels: list) -> bytes:
+def _markup_file(guid: str, viewpoint_guid: str, anomaly: dict, index: int, status: str, author: str, date: str,
+                 lot: str, phase: str, referentials: str, marking: str, labels: list,
+                 comment: Optional[str]) -> bytes:
     root = ET.Element("Markup")
-    topic = _sub(root, "Topic", Guid=topic_guid, TopicType="Error", TopicStatus="Open")
+    topic = _sub(root, "Topic", Guid=guid, TopicType="Error", TopicStatus=status)
     _sub(topic, "Title", topic_title(anomaly))
-    _sub(topic, "Priority", "Normal")
+    _sub(topic, "Priority", PRIORITIES.get(anomaly.get("severity") or "", "Normal"))
     _sub(topic, "Index", str(index))
     for label in labels + [anomaly.get("source") or "PSet"]:
         _sub(topic, "Labels", label)
     _sub(topic, "CreationDate", date)
     _sub(topic, "CreationAuthor", author)
+    if phase:
+        _sub(topic, "Stage", phase)
     _sub(topic, "Description", topic_description(anomaly, lot, referentials, marking))
+    if comment:
+        node = _sub(root, "Comment", Guid=stable_guid(guid, "comment", date))
+        _sub(node, "Date", date)
+        _sub(node, "Author", author)
+        _sub(node, "Comment", comment)
     viewpoint = _sub(root, "Viewpoints", Guid=viewpoint_guid)
     _sub(viewpoint, "Viewpoint", "viewpoint.bcfv")
     return _xml(root)
 
 
-def _viewpoint_file(viewpoint_guid: str, guids: list) -> bytes:
+def _viewpoint_file(viewpoint_guid: str, guids: list, color: bool) -> bytes:
     """Point de vue sans caméra (facultative en BCF 2.1) : les éléments
     concernés sont sélectionnés et colorés, le reste du modèle reste
     visible ; l'outil de destination cadre la sélection."""
@@ -111,43 +141,73 @@ def _viewpoint_file(viewpoint_guid: str, guids: list) -> bytes:
         for guid in guids:
             _sub(selection, "Component", IfcGuid=guid)
     _sub(components, "Visibility", DefaultVisibility="true")
-    if guids:
-        color = _sub(_sub(components, "Coloring"), "Color", Color=ANOMALY_COLOR)
+    if guids and color:
+        node = _sub(_sub(components, "Coloring"), "Color", Color=ANOMALY_COLOR)
         for guid in guids:
-            _sub(color, "Component", IfcGuid=guid)
+            _sub(node, "Component", IfcGuid=guid)
     return _xml(root)
 
 
 def write_bcf(path: str, anomalies: Iterable[dict], author: str = "Checkers",
-              project_name: Optional[str] = None, lot: str = "", referentials: str = "",
-              marking: str = "", phase: str = "", creation_date: Optional[datetime] = None) -> dict:
-    """Écrit un fichier BCF 2.1 avec un sujet par anomalie.
+              project_name: Optional[str] = None, project_key: str = "", lot: str = "", referentials: str = "",
+              marking: str = "", phase: str = "", resolved: Iterable[dict] = (),
+              creation_date: Optional[datetime] = None) -> dict:
+    """Écrit un fichier BCF 2.1 avec un sujet ouvert par anomalie.
 
-    `anomalies` : dicts level, ifc_class, requirement, source, count, guids
-    (voir recette.run_recette). La mention de confidentialité éventuelle figure en
-    tête de chaque description et en étiquette.
+    `anomalies` : dicts level, ifc_class, requirement, source, severity,
+    count, guids (voir recette.run_recette). `resolved` : groupes d'anomalies
+    levées depuis la recette précédente (journal.compare) ; ceux qui n'ont
+    plus aucun élément en anomalie sont écrits comme sujets clos.
+    `project_key` (GlobalId du projet IFC de préférence) entre dans les
+    identifiants stables des sujets. La mention de confidentialité éventuelle
+    figure en tête de chaque description et en étiquette.
 
-    Retourne {"topics": nb de sujets, "components": nb d'éléments référencés,
-    "skipped_guids": nb d'identifiants écartés car non conformes}."""
-    date = (creation_date or datetime.now(timezone.utc)).astimezone().isoformat(timespec="seconds")
+    Retourne {"topics", "closed", "components", "skipped_guids"}."""
+    moment = (creation_date or datetime.now(timezone.utc)).astimezone()
+    date = moment.isoformat(timespec="seconds")
     author = (author or "").strip() or "Checkers"
-    labels = [label for label in ("Checkers", lot, phase, marking) if label]
-    stats = {"topics": 0, "components": 0, "skipped_guids": 0}
+    project_key = project_key or project_name or ""
+    labels = [label for label in ("Checkers", lot, marking) if label]
+    stats = {"topics": 0, "closed": 0, "components": 0, "skipped_guids": 0}
+    open_guids = set()
+
+    def clean(guids) -> list:
+        kept = []
+        for guid in guids or []:
+            if isinstance(guid, str) and _IFC_GUID_RE.match(guid):
+                kept.append(guid)
+            else:
+                stats["skipped_guids"] += 1
+        return kept
 
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("bcf.version", _version_file())
-        zf.writestr("project.bcfp", _project_file(str(uuid.uuid4()), project_name))
-        for index, anomaly in enumerate(anomalies, 1):
-            guids = []
-            for guid in anomaly.get("guids") or []:
-                if isinstance(guid, str) and _IFC_GUID_RE.match(guid):
-                    guids.append(guid)
-                else:
-                    stats["skipped_guids"] += 1
-            topic_guid, viewpoint_guid = str(uuid.uuid4()), str(uuid.uuid4())
-            zf.writestr(f"{topic_guid}/markup.bcf", _markup_file(
-                topic_guid, viewpoint_guid, anomaly, index, author, date, lot, referentials, marking, labels))
-            zf.writestr(f"{topic_guid}/viewpoint.bcfv", _viewpoint_file(viewpoint_guid, guids))
+        zf.writestr("project.bcfp", _project_file(stable_guid(project_key, "project"), project_name))
+        index = 0
+        for anomaly in anomalies:
+            index += 1
+            guid = topic_guid(project_key, lot, anomaly)
+            open_guids.add(guid)
+            guids = clean(anomaly.get("guids"))
+            viewpoint = stable_guid(guid, "viewpoint")
+            zf.writestr(f"{guid}/markup.bcf", _markup_file(
+                guid, viewpoint, anomaly, index, OPEN, author, date, lot, phase, referentials, marking, labels, None))
+            zf.writestr(f"{guid}/viewpoint.bcfv", _viewpoint_file(viewpoint, guids, color=True))
             stats["topics"] += 1
             stats["components"] += len(guids)
+        for group in resolved:
+            guid = topic_guid(project_key, lot, group)
+            if guid in open_guids:
+                continue  # il reste des éléments en anomalie : le sujet reste ouvert
+            index += 1
+            comment = f"Anomalie levée, constatée à la recette du {moment:%d/%m/%Y}."
+            if group.get("removed"):
+                comment += f" Dont {group['removed']} élément(s) supprimé(s) de la maquette."
+            viewpoint = stable_guid(guid, "viewpoint")
+            zf.writestr(f"{guid}/markup.bcf", _markup_file(
+                guid, viewpoint, group, index, CLOSED, author, date, lot, phase, referentials, marking, labels,
+                comment))
+            zf.writestr(f"{guid}/viewpoint.bcfv", _viewpoint_file(viewpoint, clean(group.get("guids")), color=False))
+            stats["topics"] += 1
+            stats["closed"] += 1
     return stats

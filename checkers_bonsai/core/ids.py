@@ -53,10 +53,15 @@ def check_ids_text(raw: bytes) -> str:
 
 
 def load_ids(path: str):
-    from ifctester import ids
-
-    with open(path, "rb") as fh:
-        check_ids_text(fh.read(MAX_IDS_BYTES + 1))
+    try:
+        from ifctester import ids
+    except ImportError:
+        raise IdsFileError("La bibliothèque ifctester est introuvable : vérifiez que Bonsai est installé et activé")
+    try:
+        with open(path, "rb") as fh:
+            check_ids_text(fh.read(MAX_IDS_BYTES + 1))
+    except OSError as exc:
+        raise IdsFileError(f"Fichier IDS illisible : {exc.strerror or exc}")
     try:
         document = ids.open(path, validate=True)
     except Exception as exc:
@@ -84,23 +89,49 @@ def anomaly_label(spec_name: str) -> str:
     return f"IDS : {spec_name}"
 
 
+def _describe(requirement, spec) -> str:
+    """Libellé de l'exigence tel que le formule ifctester (en anglais)."""
+    try:
+        return str(requirement.to_string("requirement", spec, requirement))
+    except Exception:
+        return type(requirement).__name__
+
+
+def _failure_rows(spec, warnings):
+    """(élément, raison, exigence) pour chaque échec. Le détail dépend de la
+    structure interne d'ifctester : s'il n'est pas lisible, les compteurs et
+    la sélection restent exacts et un avertissement le signale."""
+    rows = []
+    for requirement in spec.requirements:
+        description = _describe(requirement, spec)
+        try:
+            for failure in requirement.failures:
+                rows.append((failure["element"], str(failure["reason"]), description))
+        except Exception:
+            warnings.append(f"IDS : détail des échecs indisponible pour « {spec.name} » "
+                            f"(version d'ifctester non reconnue) ; les compteurs restent exacts.")
+            break
+    return rows
+
+
 def check_ids(document, ifc_file, level_of) -> dict:
     """Valide le modèle. Les spécifications visant une autre version IFC
     que celle du modèle sont ignorées (comportement normatif), pas comptées
     en échec. Retourne specifications, compteurs, anomalies {(niveau,
-    classe, « IDS : spécification »): GlobalId} et details."""
+    classe, « IDS : spécification »): GlobalId}, details et warnings."""
     document.validate(ifc_file, should_filter_version=True)
 
-    specifications, details = [], []
+    specifications, details, warnings = [], [], []
     anomalies = defaultdict(set)
+    applicable_guids = set()
     applicable_total = failed_total = specs_checked = specs_failed = cardinality_failures = 0
     total_details = 0
 
     for spec in document.specifications:
         cardinality = _cardinality(spec)
         base = {"name": spec.name, "identifier": getattr(spec, "identifier", None) or "",
-                "description": spec.description or "", "instructions": spec.instructions or "",
-                "cardinality": cardinality}
+                "description": getattr(spec, "description", None) or "",
+                "instructions": getattr(spec, "instructions", None) or "", "cardinality": cardinality}
         if spec.status is None:
             specifications.append({**base, "status": "ignoree", "applicable": 0, "failed": 0, "passed": 0,
                                    "failed_requirements": ""})
@@ -112,12 +143,9 @@ def check_ids(document, ifc_file, level_of) -> dict:
             failure_rows = [(e, "Élément interdit par cette spécification", "Interdit") for e in failed_entities]
         else:
             failed_entities = list(spec.failed_entities)
-            failure_rows = []
-            for requirement in spec.requirements:
-                description = requirement.to_string("requirement", spec, requirement)
-                for failure in requirement.failures:
-                    failure_rows.append((failure["element"], str(failure["reason"]), description))
+            failure_rows = _failure_rows(spec, warnings)
 
+        applicable_guids.update(g for g in (getattr(e, "GlobalId", None) for e in applicable_entities) if g)
         for element in failed_entities:
             guid = getattr(element, "GlobalId", None)
             if guid:
@@ -143,7 +171,7 @@ def check_ids(document, ifc_file, level_of) -> dict:
             **base, "status": "conforme" if spec.status else "non_conforme",
             "applicable": len(applicable_entities), "failed": failed, "passed": len(applicable_entities) - failed,
             "failed_requirements": "; ".join(
-                r.to_string("requirement", spec, r) for r in spec.requirements if not r.status),
+                _describe(r, spec) for r in spec.requirements if not getattr(r, "status", True)),
         })
 
     return {
@@ -151,5 +179,6 @@ def check_ids(document, ifc_file, level_of) -> dict:
         "cardinality_failures": cardinality_failures, "applicable_total": applicable_total,
         "failed_total": failed_total,
         "pass_rate": (applicable_total - failed_total) / applicable_total if applicable_total else None,
-        "anomalies": dict(anomalies), "details": details, "truncated": total_details > len(details),
+        "anomalies": dict(anomalies), "applicable_guids": applicable_guids,
+        "details": details, "truncated": total_details > len(details), "warnings": warnings,
     }

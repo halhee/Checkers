@@ -1,3 +1,5 @@
+import os
+
 import bpy
 
 from .core import rules as rules_file
@@ -19,7 +21,6 @@ _registry_cache = {}
 def registry_for(path: str):
     """Onglet Corps_Etat du fichier de règles, mis en cache par (chemin,
     date de modification) : appelé à chaque rafraîchissement du panneau."""
-    import os
     path = bpy.path.abspath(path) if path else ""
     if not path or not os.path.isfile(path):
         return None
@@ -45,12 +46,14 @@ def _phase_search(self, context, edit_text):
 
 
 class CheckersAnomaly(bpy.types.PropertyGroup):
+    """Ligne affichée dans le panneau. Les identifiants des éléments restent
+    en mémoire (voir operators.py) : aucun n'est écrit dans le fichier .blend."""
     level: bpy.props.StringProperty(name="Niveau / partie")
     ifc_class: bpy.props.StringProperty(name="Classe IFC")
     requirement: bpy.props.StringProperty(name="Exigence")
     source: bpy.props.StringProperty(name="Source")
+    severity: bpy.props.StringProperty(name="Gravité")
     count: bpy.props.IntProperty(name="Éléments")
-    guids: bpy.props.StringProperty(options={"HIDDEN"})
 
 
 class CheckersProperties(bpy.types.PropertyGroup):
@@ -60,9 +63,17 @@ class CheckersProperties(bpy.types.PropertyGroup):
         description="Information Delivery Specification (.ids) : exigences du cahier des charges BIM")
     rules_path: bpy.props.StringProperty(
         name="Règles Excel", subtype="FILE_PATH",
-        description="Fichier Excel de PSet requis, facultatif si un IDS est fourni")
+        description="Fichier Excel de PSet requis, facultatif")
     corps_etat: bpy.props.EnumProperty(name="Corps d'état", items=_corps_etat_enum,
                                        description="Lignes du fichier Excel à appliquer")
+    check_structure: bpy.props.BoolProperty(
+        name="Contrôler la structure du modèle", default=True,
+        description="Projet unique, unités, arborescence spatiale, éléments rattachés à un niveau, "
+                    "identifiants uniques… sans référentiel")
+    previous_path: bpy.props.StringProperty(
+        name="Recette précédente", subtype="FILE_PATH",
+        description="Journal (.json) enregistré avec la fiche de la recette précédente : permet de suivre les "
+                    "anomalies levées, persistantes et nouvelles")
 
     # Informations de recette
     lot: bpy.props.StringProperty(name="Lot", description="Lot ou corps d'état contrôlé (ex. Lot 02 – Gros œuvre)")
@@ -70,7 +81,7 @@ class CheckersProperties(bpy.types.PropertyGroup):
                                     description="Phase ou jalon de livraison (ex. DOE)")
     tester: bpy.props.StringProperty(name="Réalisée par", description="Nom et fonction de la personne qui recette")
     marking: bpy.props.StringProperty(
-        name="Mention", description="Mention de confidentialité facultative, portée sur chaque page du rapport "
+        name="Mention", description="Mention de confidentialité facultative, portée sur chaque page des classeurs "
                                     "et dans le BCF (ex. CONFIDENTIEL)")
     threshold_ok: bpy.props.FloatProperty(name="Seuil « validé »", default=0.98, min=0.0, max=1.0,
                                           subtype="FACTOR")
@@ -79,15 +90,14 @@ class CheckersProperties(bpy.types.PropertyGroup):
     bcf_author: bpy.props.StringProperty(name="Auteur BCF",
                                          description="Auteur des sujets BCF (adresse électronique en général)")
 
-    # Résultats
+    # Résumé de la dernière recette, pour l'affichage. Remis à zéro à
+    # l'ouverture d'un fichier (voir operators.clear_results).
     has_result: bpy.props.BoolProperty(default=False)
     verdict: bpy.props.StringProperty()
-    pset_rate: bpy.props.FloatProperty(default=-1.0)
-    pset_checked: bpy.props.IntProperty()
-    ids_rate: bpy.props.FloatProperty(default=-1.0)
-    ids_applicable: bpy.props.IntProperty()
+    summary: bpy.props.StringProperty()      # une ligne par contrôle
+    warnings: bpy.props.StringProperty()     # une ligne par avertissement
+    evolution: bpy.props.StringProperty()
     invalid_count: bpy.props.IntProperty()
-    warnings: bpy.props.StringProperty()
     anomalies: bpy.props.CollectionProperty(type=CheckersAnomaly)
     anomaly_index: bpy.props.IntProperty()
 
