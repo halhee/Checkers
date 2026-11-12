@@ -17,8 +17,9 @@ from collections import Counter, defaultdict
 import ifcopenshell.util.element
 import ifcopenshell.util.unit
 
+from .spatial import MODEL_LEVEL
+
 BLOCKING, MAJOR, MINOR = "Bloquant", "Majeur", "Mineur"
-MODEL_LEVEL = "Modèle"
 # Part d'objets génériques (IfcBuildingElementProxy) au-delà de laquelle le
 # constat passe de mineur à majeur.
 PROXY_SHARE_MAJOR = 0.10
@@ -84,12 +85,21 @@ def _check_elements_contained(ifc_file, elements):
 
 
 def _check_unique_guids(ifc_file, elements):
+    """Bloquant si des objets ou des types sont concernés : un identifiant
+    partagé désigne alors deux choses différentes dans tous les échanges
+    (BCF, suivi, GMAO). Majeur si seuls des jeux de propriétés ou des
+    relations le sont : c'est une erreur de l'export, sans effet sur le
+    repérage des éléments."""
     roots = _by_type(ifc_file, "IfcRoot")
     counts = Counter(getattr(e, "GlobalId", None) for e in roots)
     duplicated = [e for e in roots if counts[getattr(e, "GlobalId", None)] > 1]
     if not duplicated:
         return None
-    return duplicated, f"{len(duplicated)} objets partagent un GlobalId avec un autre"
+    objects = [e for e in duplicated if _is_a(e, "IfcObjectDefinition")]
+    if objects:
+        return objects, f"{len(objects)} objets partagent un GlobalId avec un autre", BLOCKING
+    return duplicated, (f"{len(duplicated)} jeux de propriétés ou relations partagent un GlobalId "
+                        f"(aucun objet concerné)"), MAJOR
 
 
 def _check_elements_named(ifc_file, elements):
@@ -107,10 +117,18 @@ def _check_proxies(ifc_file, elements):
 
 
 def _check_storeys_named(ifc_file, elements):
+    """Deux bâtiments peuvent chacun avoir un « RDC » : les doublons sont
+    cherchés parmi les étages d'un même bâtiment."""
     storeys = _by_type(ifc_file, "IfcBuildingStorey")
-    names = Counter(str(s.Name).strip() for s in storeys if not _blank(s.Name))
-    faulty = [s for s in storeys if _blank(s.Name) or names[str(s.Name).strip()] > 1]
-    return (faulty, f"{len(faulty)} étage(s) sans nom ou de même nom") if faulty else None
+
+    def key(storey):
+        relations = getattr(storey, "Decomposes", None) or ()
+        parent = relations[0].RelatingObject if relations else None
+        return parent, str(storey.Name).strip()
+
+    names = Counter(key(s) for s in storeys if not _blank(s.Name))
+    faulty = [s for s in storeys if _blank(s.Name) or names[key(s)] > 1]
+    return (faulty, f"{len(faulty)} étage(s) sans nom, ou de même nom dans un bâtiment") if faulty else None
 
 
 def _check_georeferencing(ifc_file, elements):
@@ -149,7 +167,8 @@ def check_structure(ifc_file, level_of) -> dict:
     - checks : un dict par contrôle (code, title, severity, status parmi
       « ok », « ko », « erreur », message, count) ;
     - anomalies : {(niveau, classe IFC, intitulé): {"severity", "guids", "count"}} ;
-    - blocking / major / minor : nombre de contrôles en échec par gravité."""
+    - blocking / major / minor : nombre de contrôles en échec par gravité ;
+    - errors : nombre de contrôles qui n'ont pas pu être exécutés."""
     elements = _physical_elements(ifc_file)
     checks = []
     anomalies = {}
@@ -162,6 +181,7 @@ def check_structure(ifc_file, level_of) -> dict:
             # Un contrôle qui échoue ne doit pas faire perdre les autres.
             checks.append({"code": code, "title": title, "severity": severity, "status": "erreur",
                            "message": f"Contrôle impossible ({type(exc).__name__})", "count": 0})
+            failed["erreur"] += 1
             continue
         if outcome is None:
             checks.append({"code": code, "title": title, "severity": severity, "status": "ok",
@@ -189,4 +209,5 @@ def check_structure(ifc_file, level_of) -> dict:
             anomalies[(MODEL_LEVEL, ifc_class, title)] = {"severity": severity, "guids": guids, "count": count}
 
     return {"checks": checks, "anomalies": anomalies,
-            "blocking": failed[BLOCKING], "major": failed[MAJOR], "minor": failed[MINOR]}
+            "blocking": failed[BLOCKING], "major": failed[MAJOR], "minor": failed[MINOR],
+            "errors": failed["erreur"]}

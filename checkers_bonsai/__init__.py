@@ -1,9 +1,9 @@
 """Checkers – recette de maquettes IFC dans Bonsai.
 
-Contrôle le modèle ouvert dans Bonsai (structure, IDS, PSet requis), suit
-les anomalies d'une livraison à l'autre, et produit la fiche de recette à
-signer, l'export BCF des anomalies et l'inventaire d'exploitation.
-Fonctionne entièrement hors ligne.
+Contrôle le modèle ouvert dans Bonsai (structure, IDS, PSet requis, relevé
+terrain), suit les anomalies d'une livraison à l'autre, et produit la fiche
+de recette à signer, l'export BCF des anomalies, l'inventaire d'exploitation
+et le tableau de suivi des recettes. Fonctionne entièrement hors ligne.
 
 Panneau : vue 3D > barre latérale (N) > onglet « Checkers ».
 """

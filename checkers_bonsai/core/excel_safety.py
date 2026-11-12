@@ -12,14 +12,34 @@ la maquette -- exactement le scénario où une formule injectée devient
 exploitable (ex. une formule DDE ou HYPERLINK/WEBSERVICE exécutée à
 l'ouverture par le relecteur de la recette)."""
 
+import re
+
 _DANGEROUS_PREFIXES = ('=', '+', '-', '@', '\t', '\r')
+# Caractères de contrôle interdits en XML 1.0 : openpyxl refuse d'écrire une
+# cellule qui en contient, et un BCF qui en contient est illisible. Un nom
+# d'élément IFC peut en porter (séquence d'échappement mal encodée).
+_CONTROL_CHARACTERS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def clean_text(value):
+    """Retire d'une chaîne les caractères de contrôle interdits en XML.
+    Ne touche à rien d'autre."""
+    return _CONTROL_CHARACTERS.sub("", value) if isinstance(value, str) else value
+
+
+def header_footer_text(text: str) -> str:
+    """Texte sûr pour un en-tête ou un pied de page Excel, où « & » introduit
+    un code de mise en forme (« &D » = date) : il est doublé."""
+    return clean_text(text).replace("&", "&&")
 
 
 def excel_safe(value):
     """Si `value` est une chaîne commençant par un caractère qu'Excel/openpyxl
     peut interpréter comme le début d'une formule, la préfixe d'une
-    apostrophe pour la forcer en texte brut. Ne touche à rien d'autre
-    (nombres, None, bool...), qu'openpyxl n'interprète jamais comme formule."""
+    apostrophe pour la forcer en texte brut ; en retire aussi les caractères
+    de contrôle. Ne touche à rien d'autre (nombres, None, bool...),
+    qu'openpyxl n'interprète jamais comme formule."""
+    value = clean_text(value)
     if isinstance(value, str) and value.startswith(_DANGEROUS_PREFIXES):
         return "'" + value
     return value

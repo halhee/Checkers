@@ -59,20 +59,21 @@ def applies_to(corps_etat_cell, code: Optional[str]) -> bool:
     return not codes or code.upper() in codes
 
 
-def check_archive(path: str) -> None:
+def check_archive(path: str, label: str = "Fichier de règles") -> None:
     """Refuse un .xlsx qui n'est pas une archive saine : un fichier de
-    quelques Ko peut se décompresser en plusieurs Go."""
+    quelques Ko peut se décompresser en plusieurs Go. `label` nomme le
+    fichier dans les messages (ce contrôle sert aussi au relevé terrain)."""
     if not os.path.isfile(path):
-        raise RulesFileError(f"Fichier de règles introuvable : {path}")
+        raise RulesFileError(f"{label} introuvable : {path}")
     if os.path.getsize(path) > MAX_RULES_BYTES:
-        raise RulesFileError("Fichier de règles trop volumineux")
+        raise RulesFileError(f"{label} trop volumineux")
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
     except (zipfile.BadZipFile, OSError):
-        raise RulesFileError("Le fichier de règles n'est pas un classeur Excel (.xlsx) valide")
+        raise RulesFileError(f"{label} : ce n'est pas un classeur Excel (.xlsx) valide")
     if len(members) > MAX_ARCHIVE_MEMBERS or sum(m.file_size for m in members) > MAX_UNCOMPRESSED_BYTES:
-        raise RulesFileError("Fichier de règles refusé : contenu décompressé anormalement volumineux")
+        raise RulesFileError(f"{label} refusé : contenu décompressé anormalement volumineux")
 
 
 def _open(path: str):
@@ -104,19 +105,25 @@ def load_registry(path: str) -> Optional[dict]:
 
 
 def load_rules(path: str, code: Optional[str] = None) -> dict:
-    """{"classes": [IFC_Class...], "psets": {IFC_Class: {PSet: {Paramètre: Type}}}}
-    filtrés pour le corps d'état `code` (None = toutes les lignes)."""
+    """{"classes": [IFC_Class...], "psets": {IFC_Class: {PSet: {Paramètre: Type}}},
+    "warnings": [...]} filtrés pour le corps d'état `code` (None = toutes les
+    lignes)."""
     workbook = _open(path)
     try:
         if "Element_Types" not in workbook.sheetnames:
             raise RulesFileError("Onglet « Element_Types » absent du fichier de règles")
-        classes = []
-        for row in _rows(workbook["Element_Types"]):
+        classes, declared = [], set()
+        type_rows = list(_rows(workbook["Element_Types"]))
+        if not type_rows or "IFC_Class" not in type_rows[0]:
+            raise RulesFileError("Onglet « Element_Types » vide ou sans colonne « IFC_Class »")
+        for row in type_rows:
             ifc_class = _text(row.get("IFC_Class"))
+            if ifc_class:
+                declared.add(ifc_class)
             if ifc_class and applies_to(row.get("Corps_Etat"), code) and ifc_class not in classes:
                 classes.append(ifc_class)
 
-        psets = {}
+        psets, undeclared = {}, set()
         for sheet_name in workbook.sheetnames:
             if sheet_name in RESERVED_SHEETS:
                 continue
@@ -131,8 +138,16 @@ def load_rules(path: str, code: Optional[str] = None) -> dict:
                     raise RulesFileError(
                         f"Type « {param_type} » non reconnu (onglet {sheet_name}, {ifc_class}.{param}) : "
                         f"attendu String, Int, Float, Number ou Bool")
+                if ifc_class not in declared:
+                    undeclared.add(ifc_class)
                 psets.setdefault(ifc_class, {}).setdefault(sheet_name, {})[param] = param_type
-        return {"classes": classes, "psets": psets}
+        warnings = []
+        if undeclared:
+            # Sans cet avertissement, ces règles ne seraient jamais appliquées
+            # sans que personne ne le sache.
+            warnings.append("Règles Excel ignorées : classes absentes de l'onglet « Element_Types » ("
+                            + ", ".join(sorted(undeclared)) + ")")
+        return {"classes": classes, "psets": psets, "warnings": warnings}
     finally:
         workbook.close()
 

@@ -16,7 +16,7 @@ levées depuis la recette précédente sont transmises comme sujets clos.
 
 Version 2.1 plutôt que 3.0 : c'est la plus largement prise en charge par
 les logiciels du marché. Les fichiers produits sont validés contre les
-schémas XSD officiels (voir tests/test_bonsai_extension.py).
+schémas XSD officiels (voir tests/test_recette.py).
 
 Bibliothèque standard uniquement.
 """
@@ -26,6 +26,8 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 from xml.etree import ElementTree as ET
+
+from .excel_safety import clean_text
 
 BCF_VERSION = "2.1"
 # Couleur des éléments non conformes dans les points de vue (RGB hexadécimal,
@@ -58,9 +60,9 @@ def _xml(root: ET.Element) -> bytes:
 
 
 def _sub(parent: ET.Element, tag: str, text: Optional[str] = None, **attrs) -> ET.Element:
-    element = ET.SubElement(parent, tag, {k: v for k, v in attrs.items() if v is not None})
+    element = ET.SubElement(parent, tag, {k: clean_text(v) for k, v in attrs.items() if v is not None})
     if text is not None:
-        element.text = text
+        element.text = clean_text(text)
     return element
 
 
@@ -86,18 +88,25 @@ def topic_title(anomaly: dict) -> str:
 
 def topic_description(anomaly: dict, lot: str = "", referentials: str = "", marking: str = "") -> str:
     requirement, source = anomaly["requirement"], anomaly.get("source")
+    has_elements = bool(anomaly.get("guids"))
     if source == "IDS":
         name = requirement[len("IDS : "):] if requirement.startswith("IDS : ") else requirement
         what = f"Non-conformité à la spécification {name}."
+        if not has_elements:
+            what += " Aucun élément de la maquette ne correspond à cette spécification obligatoire."
     elif source == "Structure":
         what = f"Contrôle de structure non satisfait : {requirement}."
+    elif source == "Terrain":
+        name = requirement[len("Terrain : "):] if requirement.startswith("Terrain : ") else requirement
+        what = f"Écart entre la maquette et le relevé fait sur site : {name}."
     else:
         what = f"PSet « {requirement} » absent ou incomplet (paramètre manquant, vide ou de type incorrect)."
     lines = [marking] if marking else []
     lines += [
         what,
         f"Niveau : {anomaly['level']} — classe IFC : {anomaly['ifc_class']}" + (f" — lot : {lot}" if lot else "") + ".",
-        f"Éléments concernés : {anomaly['count']} (sélectionnés dans le point de vue).",
+        (f"Éléments concernés : {anomaly['count']} (sélectionnés dans le point de vue)." if has_elements
+         else "Constat portant sur la maquette entière, sans élément à sélectionner."),
     ]
     if referentials:
         lines.append(f"Référentiel : {referentials}.")

@@ -1,0 +1,240 @@
+"""Tests d'intégration avec les vraies bibliothèques IfcOpenShell et
+ifctester (celles que Bonsai fournit), sans Blender.
+
+    pip install ifcopenshell ifctester openpyxl
+    python -m unittest discover tests_integration
+
+Les tests de tests/ utilisent des doublures : ils vérifient la logique de
+Checkers, pas son accord avec les bibliothèques réelles. Ceux-ci construisent
+une petite maquette avec IfcOpenShell et déroulent une recette complète :
+contrôles de structure, IDS d'exemple validés par ifctester, règles Excel,
+relevé terrain, fiche, BCF, journal, inventaire. Ils sont sautés si
+IfcOpenShell n'est pas installé.
+"""
+import os
+import sys
+import tempfile
+import unittest
+import zipfile
+from xml.etree import ElementTree as ET
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+try:
+    import ifcopenshell
+    import ifcopenshell.api.aggregate
+    import ifcopenshell.api.owner
+    import ifcopenshell.api.project
+    import ifcopenshell.api.pset
+    import ifcopenshell.api.root
+    import ifcopenshell.api.spatial
+    import ifcopenshell.api.unit
+    import ifctester  # noqa: F401
+    HAS_LIBRARIES = True
+except ImportError:
+    HAS_LIBRARIES = False
+
+EXAMPLES = os.path.join(ROOT, "checkers_bonsai", "examples")
+
+
+def create(model, ifc_class, name=None, **attributes):
+    entity = ifcopenshell.api.root.create_entity(model, ifc_class=ifc_class, name=name)
+    for key, value in attributes.items():
+        setattr(entity, key, value)
+    return entity
+
+
+def add_pset(model, product, name, properties):
+    pset = ifcopenshell.api.pset.add_pset(model, product=product, name=name)
+    ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=properties)
+
+
+def build_model(schema="IFC4"):
+    """Projet, site, bâtiment, un étage, un local ; un mur conforme, un mur
+    sans propriétés, une porte, une pompe repérée et une pompe nue."""
+    model = ifcopenshell.api.project.create_file(schema)
+    if schema == "IFC2X3":
+        # L'historique de propriété est obligatoire en IFC2X3 : IfcOpenShell
+        # exige qu'un auteur et une application existent dans le fichier.
+        ifcopenshell.api.owner.add_application(model)
+        ifcopenshell.api.owner.add_person_and_organisation(
+            model, person=ifcopenshell.api.owner.add_person(model),
+            organisation=ifcopenshell.api.owner.add_organisation(model))
+    project = create(model, "IfcProject", "Projet d'intégration")
+    ifcopenshell.api.unit.assign_unit(model)
+    site = create(model, "IfcSite", "Site")
+    building = create(model, "IfcBuilding", "Bâtiment A")
+    storey = create(model, "IfcBuildingStorey", "RDC")
+    space = create(model, "IfcSpace", "012", LongName="Local technique")
+    ifcopenshell.api.aggregate.assign_object(model, products=[site], relating_object=project)
+    ifcopenshell.api.aggregate.assign_object(model, products=[building], relating_object=site)
+    ifcopenshell.api.aggregate.assign_object(model, products=[storey], relating_object=building)
+    ifcopenshell.api.aggregate.assign_object(model, products=[space], relating_object=storey)
+
+    wall_class = "IfcWallStandardCase" if schema == "IFC2X3" else "IfcWall"
+    wall_ok = create(model, wall_class, "Mur conforme")
+    add_pset(model, wall_ok, "Pset_WallCommon", {"LoadBearing": True, "IsExternal": False, "AcousticRating": "Rw 45"})
+    wall_bare = create(model, wall_class, "Mur sans propriétés")
+    door = create(model, "IfcDoor", "Porte")
+    pump_class = "IfcFlowMovingDevice" if schema == "IFC2X3" else "IfcPump"
+    pump = create(model, pump_class, "Pompe de circulation", Tag="PMP-001")
+    add_pset(model, pump, "Pset_ManufacturerTypeInformation", {"Manufacturer": "Fabricant", "ModelReference": "X200"})
+    add_pset(model, pump, "Pset_ManufacturerOccurrence", {"SerialNumber": "SN-42"})
+    pump_bare = create(model, pump_class, "Pompe de relevage")
+    ifcopenshell.api.spatial.assign_container(model, products=[wall_ok, wall_bare, door, pump_bare],
+                                              relating_structure=storey)
+    ifcopenshell.api.spatial.assign_container(model, products=[pump], relating_structure=space)
+    return model, {"wall_ok": wall_ok, "wall_bare": wall_bare, "door": door, "pump": pump, "pump_bare": pump_bare,
+                   "storey": storey, "space": space}
+
+
+@unittest.skipUnless(HAS_LIBRARIES, "IfcOpenShell et ifctester ne sont pas installés")
+class RealLibrariesTest(unittest.TestCase):
+    def setUp(self):
+        from checkers_bonsai.core import recette
+        self.recette = recette
+        self.dir = tempfile.mkdtemp()
+        self.model, self.parts = build_model()
+        self.model_path = os.path.join(self.dir, "maquette.ifc")
+        self.model.write(self.model_path)
+
+    def settings(self, **values):
+        defaults = dict(ids_path=os.path.join(EXAMPLES, "conception_minimale.ids"),
+                        rules_path=os.path.join(EXAMPLES, "regles_exemple.xlsx"), corps_etat="ARC",
+                        lot="Lot 02", phase="DOE", tester="Intégration")
+        defaults.update(values)
+        return self.recette.RecetteSettings(**defaults)
+
+    def test_diagnostic(self):
+        from checkers_bonsai.core import diagnostic
+        lines = diagnostic.run(self.model)
+        self.assertTrue(all(line["ok"] for line in lines), diagnostic.to_text(lines))
+
+    def test_example_ids_pass_the_official_schema(self):
+        from checkers_bonsai.core import ids as ids_check
+        for name in ("conception_minimale.ids", "exploitation_maintenance.ids"):
+            document = ids_check.load_ids(os.path.join(EXAMPLES, name))
+            self.assertTrue(ids_check.ids_title(document).startswith("Exemple"), name)
+
+    def test_full_recette_and_deliverables(self):
+        from checkers_bonsai.core import bcf, journal, report
+        result = self.recette.run_recette(self.model, self.settings(), model_path=self.model_path,
+                                          unsaved_changes=False)
+        parts = self.parts
+
+        # Structure : la maquette est saine, hors constats mineurs (pas de
+        # géométrie ni de géoréférencement dans ce modèle de test).
+        statuses = {c["code"]: c["status"] for c in result.structure["checks"]}
+        self.assertNotIn("erreur", statuses.values(), result.structure["checks"])
+        for code in ("S01", "S02", "S03", "S04", "S05", "S06"):
+            self.assertEqual(statuses[code], "ok", code)
+        self.assertEqual(result.structure_verdict, self.recette.VALIDATED)
+
+        # IDS, par le vrai ifctester : le mur sans propriétés échoue, pas l'autre.
+        ids_result = result.ids_result
+        self.assertGreater(ids_result["specs_checked"], 0)
+        failed = set().union(*(a["guids"] for a in result.anomalies if a["source"] == "IDS"))
+        self.assertIn(parts["wall_bare"].GlobalId, failed)
+        self.assertNotIn(parts["wall_ok"].GlobalId, failed)
+        self.assertIn(parts["door"].GlobalId, failed)                       # ni degré coupe-feu, ni IsExternal
+        self.assertNotIn(parts["space"].GlobalId, failed)                   # numéro et désignation renseignés
+        self.assertTrue(ids_result["details"], "détail des échecs IDS vide")
+        self.assertTrue(all(d["reason"] and d["requirement"] for d in ids_result["details"]))
+        self.assertEqual(result.warnings, [])
+
+        # Règles Excel (corps d'état ARC) : même constat sur les murs.
+        pset_failed = set().union(*(a["guids"] for a in result.anomalies if a["source"] == "PSet"))
+        self.assertIn(parts["wall_bare"].GlobalId, pset_failed)
+        self.assertNotIn(parts["wall_ok"].GlobalId, pset_failed)
+        # Coloration : sans les constats de structure (ce modèle de test n'a
+        # pas de géométrie), le mur conforme est vert, l'autre rouge.
+        colours = self.recette.run_recette(self.model, self.settings(check_structure=False))
+        self.assertIn(parts["wall_ok"].GlobalId, colours.valid_guids)
+        self.assertIn(parts["wall_bare"].GlobalId, colours.invalid_guids)
+        levels = {a["level"] for a in result.anomalies if a["source"] != "Structure"}
+        self.assertEqual(levels, {"RDC"})
+        self.assertEqual(result.verdict, self.recette.REJECTED)
+
+        # Traçabilité.
+        self.assertEqual(result.model["schema"], "IFC4")
+        self.assertEqual(result.model["project"], "Projet d'intégration")
+        self.assertEqual(len(result.model["file"]["sha256"]), 64)
+
+        # Livrables.
+        from openpyxl import load_workbook
+        fiche = os.path.join(self.dir, "fiche.xlsx")
+        report.write_report(result, fiche)
+        self.assertEqual(load_workbook(fiche).sheetnames, ["Fiche de recette", "Structure", "IDS", "Détail PSet"])
+        bcf_path = os.path.join(self.dir, "anomalies.bcf")
+        stats = bcf.write_bcf(bcf_path, result.anomalies, project_key=result.model["project_guid"], lot="Lot 02")
+        self.assertEqual(stats["skipped_guids"], 0)                          # vrais GlobalId : tous valides
+        with zipfile.ZipFile(bcf_path) as zf:
+            for name in zf.namelist():
+                ET.fromstring(zf.read(name))
+        journal_path = os.path.join(self.dir, "recette.json")
+        journal.write_record(result, journal_path)
+
+        # Livraison suivante : le mur est complété, ses anomalies sont levées.
+        add_pset(self.model, parts["wall_bare"], "Pset_WallCommon",
+                 {"LoadBearing": False, "IsExternal": True, "AcousticRating": "Rw 40"})
+        second = self.recette.run_recette(self.model, self.settings(previous_path=journal_path),
+                                          model_path=self.model_path)
+        resolved = set().union(*(g["guids"] for g in second.evolution["resolved"]))
+        self.assertIn(parts["wall_bare"].GlobalId, resolved)
+        self.assertEqual(second.evolution["new_count"], 0)
+
+    def test_inventory_and_field_survey(self):
+        from openpyxl import load_workbook
+        from checkers_bonsai.core import inventory, spatial, survey
+        level_of = spatial.LevelCache()
+        data = inventory.collect(self.model, level_of)
+        pump = next(row for row in data["equipment"] if row["tag"] == "PMP-001")
+        self.assertEqual((pump["manufacturer"], pump["model"], pump["serial"]), ("Fabricant", "X200", "SN-42"))
+        self.assertEqual((pump["level"], pump["space"]), ("RDC", "012 – Local technique"))
+        self.assertEqual(len(data["equipment"]), 2)
+        self.assertEqual(data["spaces"][0]["number"], "012")
+        inventory.write_inventory(os.path.join(self.dir, "inventaire.xlsx"), data, {"project": "Projet"})
+
+        path = os.path.join(self.dir, "releve.xlsx")
+        survey.write_survey(path, data["equipment"], {"project": "Projet"})
+        workbook = load_workbook(path)
+        ws = workbook[survey.SHEET]
+        header = [c.value for c in ws[1]]
+        for row in range(2, ws.max_row + 1):
+            tagged = ws.cell(row, header.index("Repère (maquette)") + 1).value == "PMP-001"
+            ws.cell(row, header.index("Présent sur site (oui / non)") + 1, "oui" if tagged else "non")
+            if tagged:
+                ws.cell(row, header.index("N° de série relevé") + 1, "SN-99")
+        workbook.save(path)
+        result = self.recette.run_recette(self.model, self.recette.RecetteSettings(
+            survey_path=path, check_structure=False, lot="CVC"))
+        found = {a["requirement"]: a["guids"] for a in result.anomalies}
+        self.assertEqual(found, {survey.SERIAL_DIFFERS: [self.parts["pump"].GlobalId],
+                                 survey.ABSENT: [self.parts["pump_bare"].GlobalId]})
+
+    def test_exploitation_ids_on_equipment(self):
+        """IDS d'exemple « exploitation » : la pompe repérée passe
+        l'identification (EXP-01), la pompe nue non."""
+        settings = self.recette.RecetteSettings(
+            ids_path=os.path.join(EXAMPLES, "exploitation_maintenance.ids"), check_structure=False)
+        result = self.recette.run_recette(self.model, settings)
+        by_spec = {s["identifier"]: s for s in result.ids_result["specifications"]}
+        self.assertEqual(by_spec["EXP-06"]["status"], "ignoree")             # spécification IFC2X3
+        self.assertEqual((by_spec["EXP-01"]["applicable"], by_spec["EXP-01"]["failed"]), (2, 1))
+        self.assertEqual((by_spec["EXP-02"]["applicable"], by_spec["EXP-02"]["failed"]), (2, 1))
+        self.assertEqual(by_spec["EXP-07"]["status"], "conforme")            # local identifié
+
+    def test_ifc2x3_model(self):
+        model, parts = build_model("IFC2X3")
+        result = self.recette.run_recette(model, self.settings())
+        self.assertNotIn("erreur", [c["status"] for c in result.structure["checks"]])
+        self.assertEqual(result.model["schema"], "IFC2X3")
+        # La règle Excel « IfcWall » couvre IfcWallStandardCase.
+        self.assertEqual(result.pset["checked"], 3)                          # 2 murs + 1 porte
+        self.assertIn(parts["wall_ok"].GlobalId, result.pset["valid_guids"])
+        self.assertGreater(result.ids_result["specs_checked"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -70,6 +70,10 @@ class CheckersProperties(bpy.types.PropertyGroup):
         name="Contrôler la structure du modèle", default=True,
         description="Projet unique, unités, arborescence spatiale, éléments rattachés à un niveau, "
                     "identifiants uniques… sans référentiel")
+    survey_path: bpy.props.StringProperty(
+        name="Relevé terrain", subtype="FILE_PATH",
+        description="Fiche de relevé terrain remplie sur site (.xlsx, produite par le panneau « Exploitation et "
+                    "terrain ») : les écarts avec la maquette deviennent des anomalies")
     previous_path: bpy.props.StringProperty(
         name="Recette précédente", subtype="FILE_PATH",
         description="Journal (.json) enregistré avec la fiche de la recette précédente : permet de suivre les "
@@ -89,6 +93,10 @@ class CheckersProperties(bpy.types.PropertyGroup):
                                                subtype="FACTOR")
     bcf_author: bpy.props.StringProperty(name="Auteur BCF",
                                          description="Auteur des sujets BCF (adresse électronique en général)")
+    journals_dir: bpy.props.StringProperty(
+        name="Dossier des journaux", subtype="DIR_PATH",
+        description="Dossier où sont rangés les journaux de recette (.json), sous-dossiers compris")
+    diagnostic: bpy.props.StringProperty()   # une ligne par vérification
 
     # Résumé de la dernière recette, pour l'affichage. Remis à zéro à
     # l'ouverture d'un fichier (voir operators.clear_results).

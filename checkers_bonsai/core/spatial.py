@@ -8,6 +8,8 @@ Decomposes), valable en IFC2X3, IFC4 et IFC4X3.
 """
 
 NO_LEVEL = "Sans niveau"
+# « Niveau » des constats qui portent sur le modèle entier, pas sur des éléments.
+MODEL_LEVEL = "Modèle"
 LEVEL_CLASSES = ("IfcBuildingStorey", "IfcFacilityPart")
 # Conteneurs de haut niveau : l'élément y est rangé sans étage ni partie.
 TOP_CLASSES = ("IfcBuilding", "IfcFacility", "IfcSite", "IfcProject")

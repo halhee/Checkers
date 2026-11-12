@@ -18,8 +18,9 @@ PARENTS = {
     "IfcFacility": "IfcSpatialStructureElement", "IfcMarineFacility": "IfcFacility",
     "IfcMarinePart": "IfcFacilityPart", "IfcFacilityPart": "IfcSpatialStructureElement",
     "IfcSite": "IfcSpatialStructureElement", "IfcSpace": "IfcSpatialStructureElement",
-    "IfcSpatialStructureElement": "IfcProduct", "IfcProduct": "IfcRoot", "IfcProject": "IfcRoot",
-    "IfcSystem": "IfcRoot", "IfcMapConversion": None, "IfcRoot": None,
+    "IfcSpatialStructureElement": "IfcProduct", "IfcProduct": "IfcObject", "IfcProject": "IfcObject",
+    "IfcSystem": "IfcObject", "IfcObject": "IfcObjectDefinition", "IfcObjectDefinition": "IfcRoot",
+    "IfcPropertySet": "IfcRoot", "IfcMapConversion": None, "IfcRoot": None,
 }
 # Classes absentes d'un schéma : by_type() lève une erreur, comme IfcOpenShell.
 MISSING = {

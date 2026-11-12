@@ -25,6 +25,10 @@ class JournalError(ValueError):
     """Journal de recette illisible ou d'un format inattendu."""
 
 
+class NotAJournalError(JournalError):
+    """Le fichier n'est pas un journal Checkers (autre JSON, ou pas du JSON)."""
+
+
 def to_record(result) -> dict:
     """Recette sous forme de dictionnaire sérialisable en JSON."""
     s = result.settings
@@ -34,8 +38,10 @@ def to_record(result) -> dict:
         "date": result.date.isoformat(timespec="seconds"),
         "lot": s.lot, "phase": s.phase, "tester": s.tester, "marking": s.marking,
         "verdict": result.verdict,
-        "verdicts": {"ids": result.ids_verdict, "pset": result.pset_verdict, "structure": result.structure_verdict},
-        "rates": {"ids": result.ids_rate, "pset": result.pset_rate},
+        "verdicts": {"ids": result.ids_verdict, "pset": result.pset_verdict, "structure": result.structure_verdict,
+                     "survey": result.survey_verdict},
+        "rates": {"ids": result.ids_rate, "pset": result.pset_rate, "survey": result.survey_rate},
+        "sources": sorted(result.sources),
         "thresholds": {"ok": s.threshold_ok, "reserve": s.threshold_reserve},
         "model": {
             "project": model.get("project", ""), "project_guid": model.get("project_guid", ""),
@@ -45,6 +51,7 @@ def to_record(result) -> dict:
         "referentials": {
             "ids": {k: result.ids.get(k, "") for k in ("name", "sha256", "title")} if result.ids else None,
             "rules": {k: result.rules.get(k, "") for k in ("name", "sha256", "corps_etat")} if result.rules else None,
+            "survey": {k: result.survey.get(k, "") for k in ("name", "sha256")} if result.survey else None,
         },
         "anomalies": [
             {"level": a["level"], "ifc_class": a["ifc_class"], "requirement": a["requirement"],
@@ -73,9 +80,10 @@ def load_record(path: str) -> dict:
         with open(path, encoding="utf-8") as fh:
             record = json.load(fh)
     except (OSError, ValueError) as exc:
-        raise JournalError(f"Journal de recette illisible ({type(exc).__name__})")
+        raise NotAJournalError(f"Journal de recette illisible ({type(exc).__name__})")
 
-    _require(isinstance(record, dict) and record.get("format") == FORMAT, "ce n'est pas un journal Checkers")
+    if not (isinstance(record, dict) and record.get("format") == FORMAT):
+        raise NotAJournalError("Journal de recette invalide : ce n'est pas un journal Checkers")
     _require(record.get("version") == VERSION, f"version {record.get('version')!r} non prise en charge")
     _require(isinstance(record.get("date"), str), "date absente")
     try:
@@ -91,6 +99,13 @@ def load_record(path: str) -> dict:
                  "identifiants d'éléments mal formés")
     for key in ("model", "referentials"):
         _require(isinstance(record.get(key), dict), f"bloc « {key} » absent")
+    _require(isinstance(record["model"].get("file") or {}, dict), "bloc « model.file » mal formé")
+    for key in ("ids", "rules", "survey"):
+        _require(isinstance(record["referentials"].get(key) or {}, dict), f"référentiel « {key} » mal formé")
+    for key in ("lot", "phase", "verdict"):
+        _require(isinstance(record.get(key, ""), str), f"champ « {key} » mal formé")
+    sources = record.get("sources", [])
+    _require(isinstance(sources, list) and all(isinstance(s, str) for s in sources), "liste des contrôles mal formée")
     return record
 
 
@@ -128,15 +143,23 @@ def compare(previous: dict, result, element_exists) -> dict:
     une anomalie qui disparaît parce que l'élément a été supprimé est comptée
     à part, elle n'a pas été corrigée à proprement parler.
 
-    Une exigence qui n'est plus contrôlée (référentiel différent) ferait
-    passer ses anomalies pour résolues : la comparaison le signale dans
-    « warnings », à l'utilisateur d'en tenir compte."""
+    Une anomalie dont la source n'a pas été recontrôlée (ex. recette
+    précédente avec IDS, celle-ci sans) n'est ni levée ni persistante : elle
+    est comptée à part (« not_rechecked »). Un référentiel qui a changé peut
+    aussi faire apparaître ou disparaître des anomalies : la comparaison le
+    signale dans « warnings »."""
     before = _pairs(previous["anomalies"])
     after = _pairs(result.anomalies)
-    resolved_keys = set(before) - set(after)
+    gone = set(before) - set(after)
+    not_rechecked = {key for key in gone if key[0] not in result.sources}
+    resolved_keys = gone - not_rechecked
     removed = {key for key in resolved_keys if key[2] != NO_ELEMENT and not element_exists(key[2])}
 
     warnings = []
+    if not_rechecked:
+        skipped = ", ".join(sorted({key[0] for key in not_rechecked}))
+        warnings.append(f"{len(not_rechecked)} anomalie(s) de la recette précédente n'ont pas été recontrôlées "
+                        f"(contrôle non relancé : {skipped}) : elles ne sont pas comptées comme levées.")
     model, previous_model = result.model, previous["model"]
     if previous_model.get("project_guid") and model.get("project_guid") \
             and previous_model["project_guid"] != model["project_guid"]:
@@ -147,12 +170,17 @@ def compare(previous: dict, result, element_exists) -> dict:
     if current_hash and current_hash == (previous_model.get("file") or {}).get("sha256"):
         warnings.append("La maquette est identique à celle de la recette précédente (même empreinte).")
     previous_refs, refs = previous["referentials"], {"ids": result.ids, "rules": result.rules}
-    for key, label in (("ids", "IDS"), ("rules", "fichier de règles Excel")):
+    for key, label in (("ids", "L'IDS"), ("rules", "Le fichier de règles Excel")):
         old_hash = (previous_refs.get(key) or {}).get("sha256", "")
         new_hash = (refs[key] or {}).get("sha256", "")
-        if old_hash != new_hash:
-            warnings.append(f"Le {label} a changé depuis la recette précédente : les anomalies « résolues » ou "
+        if old_hash and new_hash and old_hash != new_hash:
+            warnings.append(f"{label} a changé depuis la recette précédente : des anomalies « levées » ou "
                             f"« nouvelles » peuvent venir du référentiel et non de la maquette.")
+    if isinstance(previous.get("sources"), list):
+        added = sorted(result.sources - set(previous["sources"]))
+        if added:
+            warnings.append(f"Contrôle(s) ajouté(s) depuis la recette précédente ({', '.join(added)}) : leurs "
+                            f"anomalies apparaissent comme nouvelles.")
 
     return {
         "previous_date": datetime.fromisoformat(previous["date"]),
@@ -161,7 +189,9 @@ def compare(previous: dict, result, element_exists) -> dict:
         "resolved": _groups(before, resolved_keys, removed),
         "new": _groups(after, set(after) - set(before)),
         "persistent": _groups(after, set(after) & set(before)),
+        "not_rechecked": _groups(before, not_rechecked),
         "resolved_count": len(resolved_keys), "removed_count": len(removed),
+        "not_rechecked_count": len(not_rechecked),
         "new_count": len(set(after) - set(before)), "persistent_count": len(set(after) & set(before)),
         "warnings": warnings,
     }

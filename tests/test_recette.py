@@ -125,11 +125,29 @@ class JournalTest(unittest.TestCase):
     def test_comparison_warnings(self):
         same = run_recette(previous_path=self.journal_path)               # même fichier, autre lot
         self.assertTrue(any("identique" in w for w in same.evolution["warnings"]))
+        # Contrôle des règles Excel non relancé : ses anomalies ne sont pas
+        # « levées », elles n'ont simplement pas été recontrôlées.
         other = self.second_delivery(lot="Lot 03", rules_path="")
         warnings = " ".join(other.evolution["warnings"])
         self.assertIn("autre lot", warnings)
-        self.assertIn("fichier de règles Excel a changé", warnings)
+        self.assertIn("n'ont pas été recontrôlées (contrôle non relancé : PSet)", warnings)
+        self.assertEqual(other.evolution["not_rechecked_count"], 3)
+        self.assertTrue(all(g["source"] != "PSet" for g in other.evolution["resolved"]))
         self.assertEqual(other.warnings[-len(other.evolution["warnings"]):], other.evolution["warnings"])
+        # Référentiel modifié entre deux recettes : signalé.
+        copy = os.path.join(self.dir, "regles_v2.xlsx")
+        workbook = load_workbook(RULES_XLSX)
+        workbook["Lisez-moi"]["A20"] = "version 2"
+        workbook.save(copy)
+        changed = self.second_delivery(rules_path=copy)
+        self.assertTrue(any("règles Excel a changé" in w for w in changed.evolution["warnings"]))
+        # Contrôle ajouté : ses anomalies sont « nouvelles » par construction.
+        structure_only = recette.run_recette(build_model(), recette.RecetteSettings(lot="Lot 02 – Gros œuvre"))
+        path = os.path.join(self.dir, "structure_seule.json")
+        journal.write_record(structure_only, path)
+        with_ids = run_recette(previous_path=path)
+        self.assertTrue(any("Contrôle(s) ajouté(s)" in w and "IDS" in w for w in with_ids.evolution["warnings"]))
+        self.assertEqual(len(with_ids.evolution["journal"]["sha256"]), 64)
 
     def test_model_level_findings_are_tracked(self):
         model, _ = build_broken_model()

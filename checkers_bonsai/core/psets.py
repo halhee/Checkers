@@ -26,7 +26,11 @@ def _elements_by_rule_class(ifc_file, classes, warnings):
             warnings.append(f"Classe « {rule_class} » inconnue du schéma {ifc_file.schema} : ignorée")
     assignment = {}
     for rule_class in sorted(by_class, key=lambda c: len(by_class[c]), reverse=True):
-        for element in by_class[rule_class]:
+        elements = [e for e in by_class[rule_class] if getattr(e, "GlobalId", None)]
+        if by_class[rule_class] and not elements:
+            # Ex. IfcMaterial : pas d'identifiant, donc ni suivi ni sélection possibles.
+            warnings.append(f"Classe « {rule_class} » sans identifiant (GlobalId) : ignorée")
+        for element in elements:
             assignment[element] = rule_class
     return assignment
 
@@ -38,7 +42,7 @@ def check_psets(ifc_file, rules: dict, level_of) -> dict:
     - anomalies : {(niveau, classe IFC, PSet): ensemble de GlobalId} ;
     - findings : détail des non-conformités (au plus MAX_FINDINGS) ;
     - truncated, warnings."""
-    warnings = []
+    warnings = list(rules.get("warnings", ()))
     assignment = _elements_by_rule_class(ifc_file, rules["classes"], warnings)
     anomalies = defaultdict(set)
     findings = []

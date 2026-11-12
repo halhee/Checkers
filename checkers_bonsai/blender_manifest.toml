@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "checkers_bonsai"
-version = "0.4.0"
+version = "0.5.0"
 name = "Checkers - recette IFC"
-tagline = "Recette IFC hors ligne : structure, IDS, PSet, suivi, BCF"
+tagline = "Recette IFC hors ligne : IDS, PSet, terrain, suivi, BCF"
 maintainer = "Checkers <khchiche.zakaria@gmail.com>"
 type = "add-on"
 website = "https://github.com/halhee/Checkers"

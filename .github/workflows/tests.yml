@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   tests:
+    name: Tests (doublures)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,3 +31,24 @@ jobs:
         with:
           name: checkers_bonsai
           path: dist/*.zip
+
+  integration:
+    # Vraies bibliothèques IfcOpenShell et ifctester, sans Blender.
+    # 3.11 : Python de Blender 4.2 à 5.0 ; 3.13 : Blender 5.1 et suivants.
+    name: Intégration IfcOpenShell (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Bibliothèques fournies par Bonsai
+        run: pip install ifcopenshell ifctester openpyxl
+      - name: Versions
+        run: python -c "import ifcopenshell, openpyxl; print('ifcopenshell', ifcopenshell.version, '| openpyxl', openpyxl.__version__)"
+      - name: Tests d'intégration
+        run: python -m unittest discover tests_integration -v

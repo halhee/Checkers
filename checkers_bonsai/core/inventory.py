@@ -11,7 +11,7 @@ import ifcopenshell.util.classification
 import ifcopenshell.util.element
 import ifcopenshell.util.system
 
-from .excel_safety import excel_safe, neutralize_formulas
+from .excel_safety import excel_safe, header_footer_text, neutralize_formulas
 from .spatial import NO_LEVEL
 
 # Équipements suivis en exploitation : la distribution technique, hors
@@ -177,7 +177,7 @@ def write_inventory(path: str, inventory: dict, model: dict, marking: str = "", 
         ws.sheet_properties.pageSetUpPr.fitToPage = True
         if marking:
             for part in (ws.oddHeader.center, ws.oddFooter.center):
-                part.text, part.size, part.color = marking, 11, "C00000"
+                part.text, part.size, part.color = header_footer_text(marking), 11, "C00000"
         ws.oddFooter.right.text = "Page &P / &N"
 
     def header(ws, row, labels):
@@ -193,7 +193,7 @@ def write_inventory(path: str, inventory: dict, model: dict, marking: str = "", 
         summary.column_dimensions[get_column_letter(col)].width = width
     row = 1
     if marking:
-        summary.cell(row, 1, marking).font = Font(bold=True, color="C00000")
+        summary.cell(row, 1, excel_safe(marking)).font = Font(bold=True, color="C00000")
         row += 1
     summary.cell(row, 1, "INVENTAIRE D'EXPLOITATION").font = Font(bold=True, size=14)
     row += 1

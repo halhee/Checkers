@@ -7,7 +7,7 @@ import bpy
 from bpy_extras.io_utils import ExportHelper
 
 from . import bonsai_link
-from .core import bcf, journal, recette
+from .core import bcf, diagnostic, journal, recette
 from .core.spatial import LevelCache
 from .core.trace import model_info
 from .props import ALL_RULES
@@ -24,7 +24,7 @@ def _missing_library(exc: ImportError) -> str:
 # dans le fichier .blend. `model` désigne le modèle contrôlé, pour détecter
 # qu'un autre projet a été ouvert depuis. `colors` et `color_types` gardent
 # l'affichage d'origine, pour la réinitialisation.
-_state = {"result": None, "model": None, "colors": {}, "color_types": {}}
+_state = {"result": None, "model": None, "colors": {}, "shading": {}}
 
 COLOR_VALID = (0.30, 0.75, 0.35, 1.0)
 COLOR_INVALID = (0.90, 0.20, 0.20, 1.0)
@@ -73,7 +73,7 @@ def on_load_post(*_):
     verdict."""
     _state.update(result=None, model=None)
     _state["colors"].clear()
-    _state["color_types"].clear()
+    _state["shading"].clear()
     for scene in bpy.data.scenes:
         props = getattr(scene, "checkers", None)
         if props is not None:
@@ -91,7 +91,8 @@ def _settings(props) -> recette.RecetteSettings:
     return recette.RecetteSettings(
         ids_path=path(props.ids_path), rules_path=path(props.rules_path),
         corps_etat=None if props.corps_etat in ("", ALL_RULES) else props.corps_etat,
-        check_structure=props.check_structure, previous_path=path(props.previous_path),
+        check_structure=props.check_structure, survey_path=path(props.survey_path),
+        previous_path=path(props.previous_path),
         lot=props.lot.strip(), phase=props.phase.strip(), tester=props.tester.strip(),
         marking=props.marking_text(), threshold_ok=props.threshold_ok, threshold_reserve=props.threshold_reserve,
     )
@@ -109,6 +110,9 @@ def _summary(result) -> str:
                      f"({result.ids_result['applicable_total']} vérifications)")
     if result.pset_rate is not None:
         lines.append(f"Règles Excel : {_pct(result.pset_rate)} conformes ({result.pset['checked']} éléments)")
+    if result.survey_rate is not None:
+        lines.append(f"Terrain : {_pct(result.survey_rate)} sans écart "
+                     f"({result.survey_result['checks']} vérifications)")
     return "\n".join(lines)
 
 
@@ -129,13 +133,14 @@ def _view3d_spaces(context):
 class CHECKERS_OT_run_recette(bpy.types.Operator):
     bl_idname = "checkers.run_recette"
     bl_label = "Lancer la recette"
-    bl_description = "Contrôle le modèle IFC ouvert : structure, IDS et règles Excel selon les choix ci-dessus"
+    bl_description = ("Contrôle le modèle IFC ouvert : structure, IDS, règles Excel et relevé terrain, "
+                      "selon les choix ci-dessus")
 
     @classmethod
     def poll(cls, context):
         props = context.scene.checkers
         return bonsai_link.current_ifc() is not None and bool(
-            props.ids_path or props.rules_path or props.check_structure)
+            props.ids_path or props.rules_path or props.check_structure or props.survey_path)
 
     def execute(self, context):
         props = context.scene.checkers
@@ -197,9 +202,16 @@ class CHECKERS_OT_select_anomaly(bpy.types.Operator):
         objects, missing = bonsai_link.objects_for_guids(guids)
         for obj in context.selected_objects:
             obj.select_set(False)
-        visible = [o for o in objects if o.visible_get()]
-        for obj in visible:
-            obj.select_set(True)
+        visible = []
+        for obj in objects:
+            # Un objet hors du calque de vue courant ne peut pas être
+            # sélectionné : Blender lève alors une erreur.
+            try:
+                if obj.visible_get():
+                    obj.select_set(True)
+                    visible.append(obj)
+            except RuntimeError:
+                continue
         if visible:
             context.view_layer.objects.active = visible[0]
             region = next((r for r in context.area.regions if r.type == "WINDOW"), None) if context.area else None
@@ -233,8 +245,12 @@ class CHECKERS_OT_color_results(bpy.types.Operator):
                 _state["colors"].setdefault(obj.name, tuple(obj.color))
                 obj.color = color
         for space in _view3d_spaces(context):
-            _state["color_types"].setdefault(space.as_pointer(), space.shading.color_type)
-            space.shading.color_type = "OBJECT"
+            shading = space.shading
+            _state["shading"].setdefault(space.as_pointer(), (shading.type, shading.color_type))
+            # La couleur d'objet ne s'affiche qu'en mode solide (ou filaire).
+            if shading.type not in ("SOLID", "WIREFRAME"):
+                shading.type = "SOLID"
+            shading.color_type = "OBJECT"
         return {"FINISHED"}
 
 
@@ -250,10 +266,10 @@ class CHECKERS_OT_reset_colors(bpy.types.Operator):
                 obj.color = color
         _state["colors"].clear()
         for space in _view3d_spaces(context):
-            original = _state["color_types"].get(space.as_pointer())
+            original = _state["shading"].get(space.as_pointer())
             if original is not None:
-                space.shading.color_type = original
-        _state["color_types"].clear()
+                space.shading.type, space.shading.color_type = original
+        _state["shading"].clear()
         return {"FINISHED"}
 
 
@@ -316,7 +332,7 @@ class CHECKERS_OT_export_report(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, f"Fiche Excel impossible : {_missing_library(exc)}. "
                                    f"Journal enregistré : {journal_path}")
             return {"CANCELLED"}
-        except OSError as exc:
+        except Exception as exc:
             self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
             return {"CANCELLED"}
         self.report({"INFO"}, f"Fiche de recette et journal enregistrés : {path}")
@@ -356,7 +372,7 @@ class CHECKERS_OT_export_bcf(bpy.types.Operator, ExportHelper):
                 project_key=result.model.get("project_guid") or "", lot=s.lot, phase=s.phase,
                 referentials=recette.describe_referentials(result), marking=s.marking,
                 resolved=result.evolution["resolved"] if result.evolution else ())
-        except OSError as exc:
+        except Exception as exc:
             self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
             return {"CANCELLED"}
         message = f"BCF enregistré : {stats['topics'] - stats['closed']} sujet(s) ouvert(s)"
@@ -400,11 +416,110 @@ class CHECKERS_OT_export_inventory(bpy.types.Operator, ExportHelper):
         except ImportError as exc:
             self.report({"ERROR"}, f"Inventaire impossible : {_missing_library(exc)}")
             return {"CANCELLED"}
-        except OSError as exc:
+        except Exception as exc:
             self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
             return {"CANCELLED"}
         self.report({"INFO"}, f"Inventaire enregistré : {len(data['equipment'])} équipement(s), "
                               f"{len(data['spaces'])} local(aux)")
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_export_survey(bpy.types.Operator, ExportHelper):
+    bl_idname = "checkers.export_survey"
+    bl_label = "Fiche de relevé terrain (Excel)"
+    bl_description = ("Liste les équipements de la maquette par niveau et par local, avec des colonnes à remplir "
+                      "sur site (présent, repère et n° de série relevés). La fiche remplie se contrôle ensuite "
+                      "dans « Contrôles > Relevé terrain »")
+
+    filename_ext = ".xlsx"
+    filter_glob: bpy.props.StringProperty(default="*.xlsx", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        return bonsai_link.current_ifc() is not None
+
+    def invoke(self, context, event):
+        self.filepath = _default_name("Releve_terrain", context.scene.checkers.lot.strip(), datetime.now(), ".xlsx")
+        return ExportHelper.invoke(self, context, event)
+
+    def execute(self, context):
+        ifc_file = bonsai_link.current_ifc()
+        if ifc_file is None:
+            self.report({"ERROR"}, "Aucun modèle IFC ouvert dans Bonsai.")
+            return {"CANCELLED"}
+        try:
+            from .core import inventory, survey
+            equipment = inventory.collect_equipment(ifc_file, LevelCache())
+            survey.write_survey(
+                bpy.path.ensure_ext(self.filepath, ".xlsx"), equipment,
+                model_info(ifc_file, bonsai_link.current_ifc_path()),
+                marking=context.scene.checkers.marking_text(), date=datetime.now())
+        except ImportError as exc:
+            self.report({"ERROR"}, f"Fiche de relevé impossible : {_missing_library(exc)}")
+            return {"CANCELLED"}
+        except Exception as exc:
+            self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Fiche de relevé enregistrée : {len(equipment)} équipement(s) à vérifier")
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_export_tracking(bpy.types.Operator, ExportHelper):
+    bl_idname = "checkers.export_tracking"
+    bl_label = "Tableau de suivi (Excel)"
+    bl_description = ("Consolide tous les journaux de recette du dossier choisi : état de la dernière recette de "
+                      "chaque lot, tendance, et historique complet. Aucune maquette n'a besoin d'être ouverte")
+
+    filename_ext = ".xlsx"
+    filter_glob: bpy.props.StringProperty(default="*.xlsx", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.scene.checkers.journals_dir)
+
+    def invoke(self, context, event):
+        self.filepath = _default_name("Suivi_recettes", "", datetime.now(), ".xlsx")
+        return ExportHelper.invoke(self, context, event)
+
+    def execute(self, context):
+        props = context.scene.checkers
+        try:
+            from .core import tracking
+            records, rejected = tracking.collect_journals(bpy.path.abspath(props.journals_dir))
+            if not records:
+                self.report({"WARNING"}, "Aucun journal de recette (.json) dans ce dossier.")
+                return {"CANCELLED"}
+            tracking.write_tracking(bpy.path.ensure_ext(self.filepath, ".xlsx"), records, rejected,
+                                    marking=props.marking_text(), date=datetime.now())
+        except ImportError as exc:
+            self.report({"ERROR"}, f"Tableau de suivi impossible : {_missing_library(exc)}")
+            return {"CANCELLED"}
+        except Exception as exc:
+            self.report({"ERROR"}, f"Tableau de suivi impossible : {exc}")
+            return {"CANCELLED"}
+        message = f"Tableau de suivi enregistré : {len(records)} recette(s)"
+        if rejected:
+            message += f", {len(rejected)} journal(aux) refusé(s)"
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_diagnostic(bpy.types.Operator):
+    bl_idname = "checkers.diagnostic"
+    bl_label = "Vérifier l'installation"
+    bl_description = ("Vérifie que Bonsai et ses bibliothèques (IfcOpenShell, ifctester, openpyxl) sont présents "
+                      "et que les IDS d'exemple sont valides sur ce poste")
+
+    def execute(self, context):
+        lines = diagnostic.run(bonsai_link.current_ifc(), bonsai_found=bonsai_link.bonsai_tool() is not None)
+        context.scene.checkers.diagnostic = diagnostic.to_text(lines)
+        failed = [line for line in lines if not line["ok"]]
+        # Sans modèle ouvert, le reste peut être en ordre : ce n'est pas un défaut d'installation.
+        blocking = [line for line in failed if line["label"] != "Modèle IFC"]
+        if blocking:
+            self.report({"ERROR"}, f"Installation incomplète : {len(blocking)} point(s) à corriger (voir le panneau)")
+        else:
+            self.report({"INFO"}, "Installation en ordre")
         return {"FINISHED"}
 
 
@@ -418,4 +533,7 @@ classes = (
     CHECKERS_OT_export_report,
     CHECKERS_OT_export_bcf,
     CHECKERS_OT_export_inventory,
+    CHECKERS_OT_export_survey,
+    CHECKERS_OT_export_tracking,
+    CHECKERS_OT_diagnostic,
 )

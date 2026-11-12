@@ -70,8 +70,11 @@ class _Collection(list):
 class _Object:
     def __init__(self, name):
         self.name, self.color, self.selected = name, (1.0, 1.0, 1.0, 1.0), False
+        self.in_view_layer = True
 
     def select_set(self, value):
+        if not self.in_view_layer:
+            raise RuntimeError("Object can't be selected because it is not in View Layer")
         self.selected = value
 
     def visible_get(self):
@@ -92,13 +95,15 @@ class ExtensionTest(unittest.TestCase):
 
         props = types.SimpleNamespace(
             ids_path="", rules_path=RULES_XLSX, corps_etat="ARC", check_structure=True, previous_path="",
+            survey_path="", journals_dir="", diagnostic="",
             lot="Lot 02", phase="DOE", tester="J. Martin", marking="confidentiel", threshold_ok=0.98,
             threshold_reserve=0.9, bcf_author="", anomalies=_Collection(), anomaly_index=0)
         props.marking_text = types.MethodType(CheckersProperties.marking_text, props)
         operators.clear_results(props)
         self.props = props
-        self.space = types.SimpleNamespace(type="VIEW_3D", shading=types.SimpleNamespace(color_type="MATERIAL"),
-                                           as_pointer=lambda: 1)
+        self.space = types.SimpleNamespace(
+            type="VIEW_3D", shading=types.SimpleNamespace(type="MATERIAL", color_type="TEXTURE"),
+            as_pointer=lambda: 1)
         area = types.SimpleNamespace(type="VIEW_3D", spaces=[self.space],
                                      regions=[types.SimpleNamespace(type="WINDOW")])
         self.scene = types.SimpleNamespace(checkers=props, BIMProperties=types.SimpleNamespace(is_dirty=False))
@@ -153,12 +158,13 @@ class ExtensionTest(unittest.TestCase):
         self.assertTrue(any(o.selected for o in self.tool.Ifc.objects.values()))
 
         ops.CHECKERS_OT_color_results().execute(ctx)
-        self.assertEqual(self.space.shading.color_type, "OBJECT")
+        # La couleur d'objet ne se voit qu'en mode solide : il est activé.
+        self.assertEqual((self.space.shading.type, self.space.shading.color_type), ("SOLID", "OBJECT"))
         self.assertEqual(self.tool.Ifc.objects[guid(1)].color, ops.COLOR_VALID)
         self.assertEqual(self.tool.Ifc.objects[guid(3)].color, ops.COLOR_INVALID)
         self.assertEqual(self.tool.Ifc.objects[guid(5)].color, (1.0, 1.0, 1.0, 1.0))   # dalle non contrôlée (ARC)
         ops.CHECKERS_OT_reset_colors().execute(ctx)
-        self.assertEqual(self.space.shading.color_type, "MATERIAL")
+        self.assertEqual((self.space.shading.type, self.space.shading.color_type), ("MATERIAL", "TEXTURE"))
         self.assertEqual(self.tool.Ifc.objects[guid(3)].color, (1.0, 1.0, 1.0, 1.0))
 
         name, _ = self.export(ops.CHECKERS_OT_export_report, ".xlsx")
@@ -236,6 +242,119 @@ class ExtensionTest(unittest.TestCase):
         self.tool.Ifc.file = None
         self.assertFalse(self.ops.CHECKERS_OT_run_recette.poll(self.context))
         self.assertFalse(self.ops.CHECKERS_OT_export_inventory.poll(self.context))
+
+
+    def test_object_outside_view_layer_does_not_break_selection(self):
+        self.run_recette()
+        result = self.ops.last_result()
+        index = next(i for i, a in enumerate(result.anomalies) if len(a["guids"]) >= 1)
+        self.tool.Ifc.objects[result.anomalies[index]["guids"][0]].in_view_layer = False
+        select = self.ops.CHECKERS_OT_select_anomaly()
+        select.index = index
+        self.assertEqual(select.execute(self.context), {"FINISHED"})
+
+    def test_field_survey_round_trip(self):
+        """Fiche de relevé produite depuis le panneau, remplie, puis contrôlée."""
+        from openpyxl import load_workbook
+        _, op = self.export(self.ops.CHECKERS_OT_export_survey, ".xlsx")
+        self.assertIn("3 équipement(s) à vérifier", op.reports[-1][1])
+        workbook = load_workbook(op.filepath)
+        ws = workbook["Relevé terrain"]
+        header = [c.value for c in ws[1]]
+        column = {name: header.index(name) + 1 for name in header}
+        for row in range(2, ws.max_row + 1):
+            is_pump = ws.cell(row, column["Repère (maquette)"]).value == "PMP-001"
+            ws.cell(row, column["Présent sur site (oui / non)"], "oui" if is_pump else "non")
+            if is_pump:
+                ws.cell(row, column["N° de série relevé"], "SN-99")          # la maquette dit SN-42
+        workbook.save(op.filepath)
+
+        self.props.survey_path, self.props.rules_path, self.props.check_structure = op.filepath, "", False
+        self.run_recette()
+        self.assertEqual(self.props.verdict, recette.REJECTED)
+        self.assertIn("Terrain : 0,0 % sans écart (3 vérifications)", self.props.summary)
+        requirements = sorted(item.requirement for item in self.props.anomalies)
+        self.assertEqual(requirements, ["Terrain : absent sur site", "Terrain : absent sur site",
+                                        "Terrain : n° de série différent"])
+
+    def test_tracking_and_diagnostic(self):
+        ops, ctx = self.ops, self.context
+        self.assertFalse(ops.CHECKERS_OT_export_tracking.poll(ctx))          # dossier non renseigné
+        self.run_recette()
+        self.export(ops.CHECKERS_OT_export_report, ".xlsx")                  # écrit aussi le journal
+        self.props.journals_dir = self.dir
+        self.assertTrue(ops.CHECKERS_OT_export_tracking.poll(ctx))
+        os.rename(os.path.join(self.dir, "sortie.xlsx"), os.path.join(self.dir, "fiche.xlsx"))
+        name, op = self.export(ops.CHECKERS_OT_export_tracking, ".xlsx")
+        self.assertTrue(name.startswith("Suivi_recettes_"), name)
+        self.assertIn("1 recette(s)", op.reports[-1][1])
+
+        diagnostic = ops.CHECKERS_OT_diagnostic()
+        self.assertEqual(diagnostic.execute(ctx), {"FINISHED"})
+        lines = self.props.diagnostic.split("\n")
+        self.assertTrue(lines[0].startswith("✓ Bonsai"), lines)
+        self.assertTrue(any(line.startswith("✓ Modèle IFC : schéma IFC4") for line in lines), lines)
+        self.assertTrue(all(line.startswith("✓") for line in lines), lines)
+
+
+    def test_panels_draw_with_valid_properties_and_operators(self):
+        """Dessine chaque section du panneau avec une mise en page simulée,
+        qui refuse une propriété ou un opérateur inexistant et une icône qui
+        n'est pas une chaîne."""
+        from checkers_bonsai import props as props_module, ui
+        test = self
+        known_props = set(props_module.CheckersProperties.__annotations__) | \
+            set(props_module.CheckersAnomaly.__annotations__)
+        known_operators = {cls.bl_idname for cls in self.ops.classes}
+
+        class Layout:
+            drawn = []
+
+            def _same(self, *args, **kwargs):
+                return self
+            row = column = box = separator = _same
+
+            def label(self, text="", icon="NONE"):
+                test.assertIsInstance(text, str)
+                test.assertIsInstance(icon, str)
+                self.drawn.append(text)
+
+            def prop(self, data, name, **kwargs):
+                test.assertIn(name, known_props)
+
+            def operator(self, idname, **kwargs):
+                test.assertIn(idname, known_operators)
+                return types.SimpleNamespace()
+
+            def operator_menu_enum(self, idname, prop, **kwargs):
+                test.assertIn(idname, known_operators)
+
+            def template_list(self, list_type, list_id, data, name, active_data, active_name, **kwargs):
+                test.assertIn(list_type, {cls.__name__ for cls in ui.classes})
+                test.assertIn(name, known_props)
+                test.assertIn(active_name, known_props)
+
+        def draw_all():
+            for cls in ui.classes:
+                if cls is ui.CHECKERS_UL_anomalies:
+                    continue
+                if getattr(cls, "poll", None) is None or cls.poll(self.context):
+                    panel = cls()
+                    panel.layout = Layout()
+                    panel.draw(self.context)
+
+        self.props.rules_path = RULES_XLSX
+        draw_all()                                                   # avant toute recette
+        self.run_recette()
+        self.ops.CHECKERS_OT_diagnostic().execute(self.context)
+        draw_all()                                                   # avec résultats et diagnostic
+        self.assertTrue(any(text.startswith("Verdict : ") for text in Layout.drawn))
+        row = ui.CHECKERS_UL_anomalies()
+        row.draw_item(self.context, Layout(), None, self.props.anomalies[0], 0, None, "", 0)
+        self.tool.Ifc.file = None                                    # sans modèle : suivi et installation seulement
+        Layout.drawn.clear()
+        draw_all()
+        self.assertIn("Ouvrez un projet IFC dans Bonsai.", Layout.drawn)
 
 
 if __name__ == "__main__":

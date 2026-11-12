@@ -161,6 +161,22 @@ class StructureTest(unittest.TestCase):
         self.assertEqual(anomalies[("Modèle", "IfcProject", "Unité de longueur déclarée")]["count"], 1)
         self.assertEqual(anomalies[("Modèle", "IfcBuilding", "Bâtiments découpés en étages")]["guids"], {guid(901)})
 
+    def test_duplicate_guids_severity_and_storey_names_per_building(self):
+        model = build_model()
+        # Deux jeux de propriétés de même GlobalId : erreur d'export, sans
+        # effet sur le repérage des éléments -> majeur, pas bloquant.
+        model.add("IfcPropertySet", GlobalId=guid(70), Name="Pset_A")
+        model.add("IfcPropertySet", GlobalId=guid(70), Name="Pset_B")
+        # Un second bâtiment avec son propre « RDC » : pas un doublon.
+        other = model.add("IfcBuilding", Name="Bâtiment B", GlobalId=guid(71))
+        ifcopenshell.aggregate(other, model.by_guid(guid(905)))
+        ifcopenshell.aggregate(model.add("IfcBuildingStorey", Name="RDC", GlobalId=guid(72)), other)
+        result = structure.check_structure(model, spatial.LevelCache())
+        checks = {c["code"]: c for c in result["checks"]}
+        self.assertEqual((checks["S02"]["status"], checks["S02"]["severity"]), ("ko", structure.MAJOR))
+        self.assertEqual(checks["S08"]["status"], "ok")
+        self.assertEqual(recette.structure_verdict(result), recette.RESERVED)
+
     def test_proxy_share_sets_severity(self):
         model = build_model()
         storey = model.by_guid(guid(902))
@@ -182,6 +198,9 @@ class StructureTest(unittest.TestCase):
         statuses = {c["code"]: c["status"] for c in result["checks"]}
         self.assertEqual(statuses["S03"], "erreur")
         self.assertEqual(sum(1 for s in statuses.values() if s == "ok"), len(structure.CHECKS) - 1)
+        # Un contrôle non exécuté ne permet pas de valider sans réserve.
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(recette.structure_verdict(result), recette.RESERVED)
 
 
 class IdsTest(unittest.TestCase):
@@ -202,6 +221,9 @@ class IdsTest(unittest.TestCase):
             counts[name] = len(document.specifications)
             self.assertTrue(ids_check.ids_title(document).startswith("Exemple"))
         self.assertEqual(counts, {"exploitation_maintenance.ids": 7, "conception_minimale.ids": 6})
+        # Identifiants des spécifications repris du fichier (ifctester ne les relit pas).
+        document = ids_check.load_ids(os.path.join(EXAMPLES, "exploitation_maintenance.ids"))
+        self.assertEqual([s.identifier for s in document.specifications][:2], ["EXP-01", "EXP-02"])
 
     def test_example_ids_structure(self):
         """Ordre des facettes imposé par ids.xsd dans <applicability>, versions
@@ -237,6 +259,8 @@ class IdsTest(unittest.TestCase):
         result = ids_check.check_ids(required_missing, f, spatial.LevelCache())
         self.assertEqual(result["cardinality_failures"], 1)
         self.assertEqual(recette.ids_verdict(result, recette.RecetteSettings()), recette.REJECTED)
+        # Le rejet a une anomalie visible, rattachée au modèle entier.
+        self.assertEqual(result["anomalies"], {("Modèle", "Aucun élément", "IDS : Équipements"): set()})
 
     def test_prohibited_specification(self):
         f = build_model()

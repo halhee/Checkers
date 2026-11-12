@@ -1,6 +1,6 @@
 """Rapport Excel de recette : fiche de recette (à signer), puis le détail
-des contrôles de structure, de l'IDS, des PSet et de l'évolution depuis la
-recette précédente.
+des contrôles de structure, de l'IDS, des PSet, du relevé terrain et de
+l'évolution depuis la recette précédente.
 
 La mention de confidentialité éventuelle (ex. « CONFIDENTIEL ») figure
 en tête de la fiche et dans l'en-tête et le pied de page de chaque onglet
@@ -11,7 +11,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from . import ids as ids_check
-from .excel_safety import excel_safe, neutralize_formulas
+from .excel_safety import excel_safe, header_footer_text, neutralize_formulas
 from .recette import INCONCLUSIVE, REJECTED, RESERVED, VALIDATED, RecetteResult, describe_referentials
 
 _THIN = Side(style="thin")
@@ -51,7 +51,7 @@ class _Sheet:
         self.ws.sheet_properties.pageSetUpPr.fitToPage = True
         if marking:
             for part in (self.ws.oddHeader.center, self.ws.oddFooter.center):
-                part.text, part.size, part.color = marking, 11, "C00000"
+                part.text, part.size, part.color = header_footer_text(marking), 11, "C00000"
         self.ws.oddFooter.right.text = "Page &P / &N"
 
     def banner(self, text, font=None, fill=None, height=None, align=WRAP_LEFT):
@@ -146,15 +146,22 @@ def _fiche(workbook, result: RecetteResult):
         sheet.line(["Règles Excel (PSet)", result.pset["checked"], _pct(result.pset_rate), _groups(result, "PSet"),
                     result.pset_verdict or INCONCLUSIVE],
                    fills={5: FILL[result.pset_verdict or INCONCLUSIVE]}, formats=PCT)
+    if result.survey_result is not None:
+        r = result.survey_result
+        sheet.line(["Relevé terrain", r["checks"], _pct(r["pass_rate"]), _groups(result, "Terrain"),
+                    result.survey_verdict or INCONCLUSIVE],
+                   fills={5: FILL[result.survey_verdict or INCONCLUSIVE]}, formats=PCT)
     sheet.row += 1
     sheet.banner(f"VERDICT : {result.verdict.upper()}", Font(size=13, bold=True), FILL[result.verdict],
                  height=24, align=WRAP_CENTER)
     sheet.banner("Vérifications : nombre de contrôles pour la structure, de couples élément × spécification pour "
-                 "l'IDS, d'éléments pour les règles Excel.", NOTE)
-    sheet.banner(f"Seuils IDS et règles Excel : ≥ {s.threshold_ok:.0%} validé ; ≥ {s.threshold_reserve:.0%} validé "
-                 f"avec réserves ; rejeté en dessous. Une spécification IDS obligatoire sans aucun élément concerné "
-                 f"entraîne le rejet. Structure : un constat bloquant entraîne le rejet, un constat majeur des "
-                 f"réserves. Le verdict global est le plus sévère.", NOTE, height=38)
+                 "l'IDS, d'éléments pour les règles Excel, d'équipements vérifiés sur site pour le relevé terrain.",
+                 NOTE, height=26)
+    sheet.banner(f"Seuils IDS, règles Excel et relevé terrain : ≥ {s.threshold_ok:.0%} validé ; "
+                 f"≥ {s.threshold_reserve:.0%} validé avec réserves ; rejeté en dessous. Une spécification IDS "
+                 f"obligatoire sans aucun élément concerné entraîne le rejet. Structure : un constat bloquant "
+                 f"entraîne le rejet, un constat majeur ou un contrôle non exécuté des réserves. Le verdict global "
+                 f"est le plus sévère.", NOTE, height=50)
     for warning in result.warnings:
         sheet.banner(f"⚠ {warning}", Font(size=10, color="9C5700"))
 
@@ -166,6 +173,8 @@ def _fiche(workbook, result: RecetteResult):
         sheet.field("Anomalies levées", f"{e['resolved_count']}{removed}")
         sheet.field("Anomalies persistantes", str(e["persistent_count"]))
         sheet.field("Anomalies nouvelles", str(e["new_count"]))
+        if e["not_rechecked_count"]:
+            sheet.field("Anomalies non recontrôlées", f"{e['not_rechecked_count']} (contrôle non relancé)")
         sheet.banner("Décompte par élément et par exigence ; détail dans l'onglet « Évolution ».", NOTE)
 
     sheet.section(f"Anomalies ouvertes ({len(result.anomalies)} groupes, "
@@ -186,7 +195,9 @@ def _fiche(workbook, result: RecetteResult):
     sheet.field("Application auteur", model.get("originating_system"))
     sheet.field("Auteur / organisation", " / ".join(v for v in (model.get("author"), model.get("organization")) if v))
     sheet.field("Date d'export IFC", model.get("timestamp"))
-    for label, info in (("IDS", result.ids), ("Règles Excel", result.rules)):
+    previous_journal = (result.evolution or {}).get("journal")
+    for label, info in (("IDS", result.ids), ("Règles Excel", result.rules), ("Relevé terrain", result.survey),
+                        ("Journal précédent", previous_journal)):
         if info:
             sheet.field(f"{label} (SHA-256)", f"{info.get('name', '')} – {info.get('sha256', '')}")
     sheet.banner("L'analyse porte sur le modèle ouvert dans Bonsai au moment de la recette ; l'empreinte est "
@@ -257,7 +268,8 @@ def _evolution_sheet(workbook, result: RecetteResult):
     sheet.header(["Statut", "Niveau / partie", "Classe IFC", "Exigence", "Source", "Éléments",
                   "Dont éléments supprimés"])
     rows = [("Levée", FILL[VALIDATED], e["resolved"]), ("Nouvelle", FILL[REJECTED], e["new"]),
-            ("Persistante", FILL[RESERVED], e["persistent"])]
+            ("Persistante", FILL[RESERVED], e["persistent"]),
+            ("Non recontrôlée", FILL[INCONCLUSIVE], e["not_rechecked"])]
     for label, fill, groups in rows:
         for g in groups:
             sheet.line([label, g["level"], g["ifc_class"], g["requirement"], g["source"], g["count"],
@@ -266,6 +278,22 @@ def _evolution_sheet(workbook, result: RecetteResult):
         sheet.banner("Aucune anomalie, ni à la recette précédente ni à celle-ci.")
     sheet.ws.freeze_panes = "A2"
     sheet.ws.auto_filter.ref = f"A1:G{max(sheet.row - 1, 1)}"
+
+
+def _survey_sheet(workbook, result: RecetteResult):
+    r = result.survey_result
+    sheet = _Sheet(workbook, "Terrain", [18, 22, 22, 26, 28, 30, 22, 22, 36], result.settings.marking)
+    sheet.banner(f"Relevé terrain : {result.survey.get('name', '')} — {r['verified']} équipement(s) vérifié(s) sur "
+                 f"site, dont {r['conform']} sans écart ; {r['unmodelled']} non modélisé(s) ; {r['unverified']} non "
+                 f"vérifié(s) ; {r['unknown']} ligne(s) sans élément correspondant dans la maquette.", Font(bold=True),
+                 height=30)
+    sheet.header(["Niveau / partie", "Local", "Classe IFC", "GlobalId", "Désignation", "Écart", "Valeur maquette",
+                  "Valeur relevée", "Observation"])
+    for d in r["details"]:
+        sheet.line([d["level"], d["space"], d["ifc_class"], d["guid"], d["name"], d["problem"], d["model"],
+                    d["found"], d["note"]])
+    if not r["details"]:
+        sheet.banner("Aucun écart entre la maquette et le relevé.")
 
 
 def write_report(result: RecetteResult, path: str) -> None:
@@ -279,5 +307,7 @@ def write_report(result: RecetteResult, path: str) -> None:
         _ids_sheet(workbook, result)
     if result.pset is not None:
         _pset_details(workbook, result)
+    if result.survey_result is not None:
+        _survey_sheet(workbook, result)
     neutralize_formulas(workbook)
     workbook.save(path)

@@ -9,10 +9,16 @@ schémas embarqués, sans téléchargement.
 """
 import re
 from collections import defaultdict
+from xml.etree import ElementTree as ET
+
+from .spatial import MODEL_LEVEL
 
 MAX_IDS_BYTES = 10 * 1024 * 1024
 MAX_PATTERN_LENGTH = 256
 MAX_DETAILS = 50000
+
+# Classe affichée pour une spécification en échec sans aucun élément concerné.
+NO_ELEMENT_CLASS = "Aucun élément"
 
 STATUS_LABELS = {"conforme": "Conforme", "non_conforme": "Non conforme", "ignoree": "Ignorée (autre version IFC)"}
 CARDINALITY_LABELS = {"required": "Obligatoire", "optional": "Facultative", "prohibited": "Interdite"}
@@ -52,6 +58,23 @@ def check_ids_text(raw: bytes) -> str:
     return text
 
 
+def _attach_identifiers(document, text: str) -> None:
+    """ifctester ne relit pas l'attribut « identifier » des spécifications
+    (ex. « EXP-01 ») : il est repris ici du fichier, dans l'ordre des
+    spécifications. Le texte a déjà passé check_ids_text (ni DOCTYPE, ni
+    ENTITY)."""
+    try:
+        root = ET.fromstring(text.encode("utf-8"))
+    except ET.ParseError:
+        return
+    nodes = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "specification"]
+    if len(nodes) != len(document.specifications):
+        return
+    for spec, node in zip(document.specifications, nodes):
+        if not getattr(spec, "identifier", None):
+            spec.identifier = node.get("identifier") or ""
+
+
 def load_ids(path: str):
     try:
         from ifctester import ids
@@ -59,7 +82,7 @@ def load_ids(path: str):
         raise IdsFileError("La bibliothèque ifctester est introuvable : vérifiez que Bonsai est installé et activé")
     try:
         with open(path, "rb") as fh:
-            check_ids_text(fh.read(MAX_IDS_BYTES + 1))
+            text = check_ids_text(fh.read(MAX_IDS_BYTES + 1))
     except OSError as exc:
         raise IdsFileError(f"Fichier IDS illisible : {exc.strerror or exc}")
     try:
@@ -70,6 +93,7 @@ def load_ids(path: str):
         raise IdsFileError(f"Fichier IDS invalide : {reason}")
     if not document.specifications:
         raise IdsFileError("Fichier IDS sans aucune spécification")
+    _attach_identifiers(document, text)
     return document
 
 
@@ -150,6 +174,11 @@ def check_ids(document, ifc_file, level_of) -> dict:
             guid = getattr(element, "GlobalId", None)
             if guid:
                 anomalies[(level_of(element), element.is_a(), anomaly_label(spec.name))].add(guid)
+        if not spec.status and not failed_entities:
+            # Spécification obligatoire qu'aucun élément ne concerne : rien à
+            # sélectionner, mais le constat doit figurer parmi les anomalies
+            # (fiche, BCF, suivi), pas seulement dans le verdict.
+            anomalies[(MODEL_LEVEL, NO_ELEMENT_CLASS, anomaly_label(spec.name))] = set()
         for element, reason, description in failure_rows:
             total_details += 1
             if len(details) < MAX_DETAILS:
