@@ -294,7 +294,7 @@ def box(model, body, storey, ifc_class, name, origin, size):
 @unittest.skipUnless(HAS_IFCCLASH, "IfcOpenShell ou IfcClash ne sont pas installés")
 class CoordinationTest(unittest.TestCase):
     """Cohérence entre lots et conflits géométriques avec le vrai IfcClash :
-    une gaine CVC traverse une poutre du lot structure."""
+    une gaine CVC pénètre dans une poutre du lot structure."""
 
     def setUp(self):
         from checkers_bonsai.core import clashes, federation, recette, spatial
@@ -302,8 +302,10 @@ class CoordinationTest(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.cvc, body, rdc = build_lot()
         project_guid = self.cvc.by_type("IfcProject")[0].GlobalId
-        self.duct = box(self.cvc, body, rdc, "IfcDuctSegment", "Gaine soufflage", (0, 0, 2.6), (6, 0.4, 0.4))
-        self.far = box(self.cvc, body, rdc, "IfcDuctSegment", "Gaine reprise", (0, 5, 2.6), (6, 0.4, 0.4))
+        # La gaine soufflage s'arrête au milieu de la poutre : son extrémité y pénètre de 15 cm, sans face
+        # commune. La gaine reprise passe à côté.
+        self.duct = box(self.cvc, body, rdc, "IfcDuctSegment", "Gaine soufflage", (0, 0, 2.6), (2.15, 0.4, 0.3))
+        self.far = box(self.cvc, body, rdc, "IfcDuctSegment", "Gaine reprise", (0, 5, 2.6), (2.15, 0.4, 0.3))
         structure, body, rdc = build_lot(project_guid=project_guid)
         self.beam = box(structure, body, rdc, "IfcBeam", "Poutre", (2, -1, 2.5), (0.3, 4, 0.5))
         self.str_path = os.path.join(self.dir, "STR.ifc")
