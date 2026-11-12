@@ -22,6 +22,7 @@ ne partagent pas le même repère (voir federation.py), les conflits trouvés
 ne veulent rien dire.
 """
 import logging
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
@@ -33,8 +34,24 @@ CLASH_TYPES = {"protrusion": "dépassement", "pierce": "traversée", "collision"
                "clearance": "dégagement insuffisant"}
 SEVERITIES = (BLOCKING, MAJOR, MINOR)
 MAX_DETAILS = 50000
+MAX_PAIRS_PER_GROUP = 500      # conflits gardés par anomalie pour la navigation 3D
 # Clé de la maquette ouverte dans le cache d'IfcClash (jamais un chemin réel).
 _CURRENT_KEY = "<maquette ouverte>"
+
+
+# « Conflit avec « STR » (intersection, 1 cm) : IfcBeam » : la distance entre
+# parenthèses, juste avant « : classe ».
+_DISTANCE_RE = re.compile(r" \(([^(),]+), [^()]*\)(?= : [^:]*$)")
+
+
+def stable_requirement(source: str, requirement: str) -> str:
+    """Exigence servant à suivre une anomalie d'une recette à l'autre
+    (journal, sujets BCF, dérogations). Pour un conflit, la distance de la
+    règle n'en fait pas partie : régler une tolérance ne doit pas faire
+    passer tous les conflits pour nouveaux. Le mode, lui, en fait partie."""
+    if source == "Conflit":
+        return _DISTANCE_RE.sub(r" (\1)", requirement, count=1)
+    return requirement
 
 
 class ClashError(ValueError):
@@ -113,7 +130,9 @@ def run_clashes(ifc_file, lots: list, rules: list, level_of) -> dict:
     - rules : par règle, label, lot, severity, status (« ok », « ko »,
       « erreur »), message, count (nombre de conflits) ;
     - anomalies : {(niveau, classe IFC, intitulé): {"severity", "guids",
-      "count", "related_guids", "point"}} ;
+      "count", "related_guids", "point", "lot", "conflicts"}} ; « lot » : le lot
+      confronté (ou CURRENT) ; « conflicts » : les paires (a, b, point), pour
+      passer d'un conflit à l'autre dans la vue 3D ;
     - details : un dict par conflit (au plus MAX_DETAILS) ; truncated ;
     - total : nombre de conflits ; blocking / major / minor / errors."""
     ifcclash = _clasher_module()
@@ -123,7 +142,7 @@ def run_clashes(ifc_file, lots: list, rules: list, level_of) -> dict:
 
     summary, details = [], []
     anomalies = {}
-    groups = defaultdict(lambda: {"guids": set(), "related": set(), "point": None, "pairs": 0})
+    groups = defaultdict(lambda: {"guids": set(), "related": set(), "point": None, "pairs": 0, "conflicts": []})
     failed = Counter()
     total = 0
 
@@ -181,11 +200,15 @@ def run_clashes(ifc_file, lots: list, rules: list, level_of) -> dict:
             requirement = f"{rule.label()} : {clash['b_ifc_class']}"
             group = groups[(level_of(element), clash["a_ifc_class"], requirement)]
             group["severity"] = rule.severity
+            group["lot"] = rule.other
             group["guids"].add(a)
             (group["guids"] if internal else group["related"]).add(b)
             group["pairs"] += 1
+            point = tuple(float(v) for v in clash.get("p1") or (0.0, 0.0, 0.0))
             if group["point"] is None:
-                group["point"] = tuple(float(v) for v in clash.get("p1") or (0.0, 0.0, 0.0))
+                group["point"] = point
+            if len(group["conflicts"]) < MAX_PAIRS_PER_GROUP:
+                group["conflicts"].append({"a": a, "b": b, "point": point})
             if len(details) < MAX_DETAILS:
                 details.append({
                     "rule": rule.label(), "level": level_of(element), "a_class": clash["a_ifc_class"], "a_guid": a,
@@ -204,7 +227,8 @@ def run_clashes(ifc_file, lots: list, rules: list, level_of) -> dict:
 
     for key, group in groups.items():
         anomalies[key] = {"severity": group["severity"], "guids": group["guids"], "count": len(group["guids"]),
-                          "related_guids": group["related"], "point": group["point"], "pairs": group["pairs"]}
+                          "related_guids": group["related"], "point": group["point"], "pairs": group["pairs"],
+                          "lot": group["lot"], "conflicts": group["conflicts"]}
     return {"rules": summary, "anomalies": anomalies, "details": details, "truncated": total > len(details),
             "total": total, "blocking": failed[BLOCKING], "major": failed[MAJOR], "minor": failed[MINOR],
             "errors": failed["erreur"]}

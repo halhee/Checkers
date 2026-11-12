@@ -1,6 +1,6 @@
 """Rapport Excel de recette : fiche de recette (à signer), puis le détail
-des contrôles de structure, de l'IDS, des PSet, du relevé terrain et de
-l'évolution depuis la recette précédente.
+des contrôles de structure, de l'IDS, des PSet, du relevé terrain, de la
+coordination, des dérogations et de l'évolution depuis la recette précédente.
 
 La mention de confidentialité éventuelle (ex. « CONFIDENTIEL ») figure
 en tête de la fiche et dans l'en-tête et le pied de page de chaque onglet
@@ -139,7 +139,7 @@ def _fiche(workbook, result: RecetteResult):
                     result.structure_verdict], fills={5: FILL[result.structure_verdict]}, formats=PCT)
     if result.ids_result is not None:
         r = result.ids_result
-        sheet.line(["IDS", r["applicable_total"], _pct(r["pass_rate"]), _groups(result, "IDS"),
+        sheet.line(["IDS", r["applicable_total"], _pct(result.ids_rate), _groups(result, "IDS"),
                     result.ids_verdict or INCONCLUSIVE],
                    fills={5: FILL[result.ids_verdict or INCONCLUSIVE]}, formats=PCT)
     if result.pset is not None:
@@ -148,7 +148,7 @@ def _fiche(workbook, result: RecetteResult):
                    fills={5: FILL[result.pset_verdict or INCONCLUSIVE]}, formats=PCT)
     if result.survey_result is not None:
         r = result.survey_result
-        sheet.line(["Relevé terrain", r["checks"], _pct(r["pass_rate"]), _groups(result, "Terrain"),
+        sheet.line(["Relevé terrain", r["checks"], _pct(result.survey_rate), _groups(result, "Terrain"),
                     result.survey_verdict or INCONCLUSIVE],
                    fills={5: FILL[result.survey_verdict or INCONCLUSIVE]}, formats=PCT)
     if result.federation is not None:
@@ -165,6 +165,9 @@ def _fiche(workbook, result: RecetteResult):
         sheet.line([f"Conflits géométriques ({result.clashes['total']} conflit(s))", len(done), _pct(rate),
                     _groups(result, "Conflit"), result.clash_verdict],
                    fills={5: FILL[result.clash_verdict]}, formats=PCT)
+    if result.admitted:
+        sheet.line([f"Dérogations ({result.admitted_elements} élément(s) ou constat(s))", "", "",
+                    len(result.admitted), "Admises"], fills={5: FILL[INCONCLUSIVE]})
     sheet.row += 1
     sheet.banner(f"VERDICT : {result.verdict.upper()}", Font(size=13, bold=True), FILL[result.verdict],
                  height=24, align=WRAP_CENTER)
@@ -175,7 +178,9 @@ def _fiche(workbook, result: RecetteResult):
                  f"≥ {s.threshold_reserve:.0%} validé avec réserves ; rejeté en dessous. Une spécification IDS "
                  f"obligatoire sans aucun élément concerné entraîne le rejet. Structure, cohérence entre lots et "
                  f"conflits : un constat bloquant entraîne le rejet, un constat majeur ou un contrôle non exécuté "
-                 f"des réserves. Le verdict global est le plus sévère.", NOTE, height=50)
+                 f"des réserves. Le verdict global est le plus sévère. Les anomalies admises par dérogation ne "
+                 f"comptent pas (taux et verdicts calculés sans elles ; détail dans l'onglet « Dérogations »).",
+                 NOTE, height=62)
     for warning in result.warnings:
         sheet.banner(f"⚠ {warning}", Font(size=10, color="9C5700"))
 
@@ -189,6 +194,8 @@ def _fiche(workbook, result: RecetteResult):
         sheet.field("Anomalies nouvelles", str(e["new_count"]))
         if e["not_rechecked_count"]:
             sheet.field("Anomalies non recontrôlées", f"{e['not_rechecked_count']} (contrôle non relancé)")
+        if e.get("admitted_count"):
+            sheet.field("Anomalies admises depuis", f"{e['admitted_count']} (dérogation accordée)")
         sheet.banner("Décompte par élément et par exigence ; détail dans l'onglet « Évolution ».", NOTE)
 
     sheet.section(f"Anomalies ouvertes ({len(result.anomalies)} groupes, "
@@ -211,7 +218,7 @@ def _fiche(workbook, result: RecetteResult):
     sheet.field("Date d'export IFC", model.get("timestamp"))
     previous_journal = (result.evolution or {}).get("journal")
     for label, info in (("IDS", result.ids), ("Règles Excel", result.rules), ("Relevé terrain", result.survey),
-                        ("Journal précédent", previous_journal)):
+                        ("Dérogations", result.derogations), ("Journal précédent", previous_journal)):
         if info:
             sheet.field(f"{label} (SHA-256)", f"{info.get('name', '')} – {info.get('sha256', '')}")
     for lot in result.lots:
@@ -285,7 +292,8 @@ def _evolution_sheet(workbook, result: RecetteResult):
                   "Dont éléments supprimés"])
     rows = [("Levée", FILL[VALIDATED], e["resolved"]), ("Nouvelle", FILL[REJECTED], e["new"]),
             ("Persistante", FILL[RESERVED], e["persistent"]),
-            ("Non recontrôlée", FILL[INCONCLUSIVE], e["not_rechecked"])]
+            ("Non recontrôlée", FILL[INCONCLUSIVE], e["not_rechecked"]),
+            ("Admise", FILL[INCONCLUSIVE], e.get("admitted", []))]
     for label, fill, groups in rows:
         for g in groups:
             sheet.line([label, g["level"], g["ifc_class"], g["requirement"], g["source"], g["count"],
@@ -352,6 +360,32 @@ def _clash_sheet(workbook, result: RecetteResult):
         sheet.banner("Liste tronquée (les compteurs restent exacts).", NOTE)
 
 
+def _derogation_sheet(workbook, result: RecetteResult):
+    info = result.derogations or {}
+    sheet = _Sheet(workbook, "Dérogations", [18, 20, 22, 40, 10, 44, 20, 18, 14], result.settings.marking)
+    sheet.banner(f"Fichier des dérogations : {info.get('name', '')} — {info.get('entries', 0)} dérogation(s) "
+                 f"applicable(s) à ce lot.", Font(bold=True))
+    sheet.section("Anomalies admises", numbered=False)
+    sheet.header(["Source", "Niveau / partie", "Classe IFC", "Exigence", "Éléments", "Motif", "Accordée par",
+                  "Le", "Identifiant"])
+    for a in result.admitted:
+        d = a["derogation"]
+        sheet.line([_source_label(a), a["level"], a["ifc_class"], a["requirement"], a["count"], d.get("reason", ""),
+                    d.get("author", ""), (d.get("date", "") or "")[:10], d.get("id", "")])
+    if not result.admitted:
+        sheet.banner("Aucune anomalie admise à cette recette.")
+    unused = info.get("unused") or []
+    sheet.section(f"Dérogations sans objet ({len(unused)})", numbered=False)
+    sheet.banner("Plus aucune anomalie ne leur correspond : défaut corrigé, élément supprimé ou contrôle non "
+                 "relancé. Elles peuvent être retirées du fichier.", NOTE)
+    sheet.header(["Source", "Niveau / partie", "Classe IFC", "Exigence", "Éléments", "Motif", "Accordée par",
+                  "Le", "Identifiant"])
+    for e in unused:
+        sheet.line([e["source"], e.get("level", ""), e.get("ifc_class", ""), e.get("label") or e["requirement"],
+                    len(e.get("guids") or []) or "", e["reason"], e.get("author", ""), (e.get("date", "") or "")[:10],
+                    e["id"]])
+
+
 def write_report(result: RecetteResult, path: str) -> None:
     workbook = Workbook()
     _fiche(workbook, result)
@@ -369,5 +403,7 @@ def write_report(result: RecetteResult, path: str) -> None:
         _federation_sheet(workbook, result)
     if result.clashes is not None:
         _clash_sheet(workbook, result)
+    if result.derogations is not None:
+        _derogation_sheet(workbook, result)
     neutralize_formulas(workbook)
     workbook.save(path)

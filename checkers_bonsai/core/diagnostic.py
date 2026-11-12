@@ -23,6 +23,7 @@ REQUIRED = (
     ("ifcopenshell.util.placement", (("get_placement", "get_local_placement"),)),
     ("ifctester.ids", ("open",)),
     ("ifcclash.ifcclash", ("Clasher", "ClashSettings")),
+    ("ifcopenshell.geom", ("settings", "create_shape")),
     ("openpyxl", ("Workbook", "load_workbook")),
 )
 BONSAI_HINT = "vérifiez que Bonsai est installé et activé"

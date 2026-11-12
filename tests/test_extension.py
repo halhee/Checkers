@@ -105,7 +105,8 @@ class ExtensionTest(unittest.TestCase):
 
         props = types.SimpleNamespace(
             ids_path="", rules_path=RULES_XLSX, corps_etat="ARC", check_structure=True, previous_path="",
-            survey_path="", journals_dir="", diagnostic="",
+            survey_path="", journals_dir="", diagnostic="", derogations_path="",
+            admitted=_Collection(), admitted_index=0, conflict_position="",
             lot="Lot 02", phase="DOE", tester="J. Martin", marking="confidentiel", threshold_ok=0.98,
             threshold_reserve=0.9, bcf_author="", anomalies=_Collection(), anomaly_index=0,
             lots=_Collection(name="", path=""), lot_index=0, check_federation=True, check_clashes=False,
@@ -117,10 +118,13 @@ class ExtensionTest(unittest.TestCase):
         self.props = props
         self.space = types.SimpleNamespace(
             type="VIEW_3D", shading=types.SimpleNamespace(type="MATERIAL", color_type="TEXTURE"),
-            as_pointer=lambda: 1)
+            as_pointer=lambda: 1, region_3d=types.SimpleNamespace(view_location=(0, 0, 0), view_distance=10.0))
         area = types.SimpleNamespace(type="VIEW_3D", spaces=[self.space],
                                      regions=[types.SimpleNamespace(type="WINDOW")])
-        self.scene = types.SimpleNamespace(checkers=props, BIMProperties=types.SimpleNamespace(is_dirty=False))
+        self.scene = types.SimpleNamespace(checkers=props, BIMProperties=types.SimpleNamespace(is_dirty=False),
+                                           collection=types.SimpleNamespace(children=bpy.IDCollection()),
+                                           cursor=types.SimpleNamespace(location=(0.0, 0.0, 0.0)))
+        self.scene.collection.children.link = lambda c: None
         bpy.data.scenes = [self.scene]
         self.context = types.SimpleNamespace(
             scene=self.scene, area=area, selected_objects=[],
@@ -134,12 +138,14 @@ class ExtensionTest(unittest.TestCase):
         self.ext.unregister()
         self.assertEqual(self.bpy.registered, [])
         self.assertEqual(self.bpy.app.handlers.load_post, [])
+        self.assertEqual(self.bpy.app.handlers.save_pre, [])
 
     def open_model(self, model):
         self.model = model
         self.tool.Ifc.file, self.tool.Ifc.path = model, ""
         self.tool.Ifc.objects = {e.GlobalId: _Object(e.GlobalId) for e in model.entities if e.is_a("IfcElement")}
-        self.bpy.data.objects = {o.name: o for o in self.tool.Ifc.objects.values()}
+        self.bpy.data.objects = self.bpy.IDCollection({o.name: o for o in self.tool.Ifc.objects.values()})
+        self.bpy.data.meshes, self.bpy.data.collections = self.bpy.IDCollection(), self.bpy.IDCollection()
 
     def run_recette(self):
         self.assertEqual(self.ops.CHECKERS_OT_run_recette().execute(self.context), {"FINISHED"})
@@ -311,6 +317,112 @@ class ExtensionTest(unittest.TestCase):
         self.assertTrue(all(line.startswith("✓") for line in lines), lines)
 
 
+    def coordination(self):
+        """Gaine de cette maquette qui traverse une poutre du lot STR."""
+        from test_coordination import BEAM, add_boxes, frame, other_lot
+        self.open_model(add_boxes(frame(add_equipment(build_model()))))
+        self.tool.Ifc.path = os.path.join(self.dir, "CVC.ifc")
+        other, path = other_lot(self.dir)
+        beam = other.add("IfcBeam", GlobalId=BEAM, Name="Poutre", _box=((2, -1, 2.5), (2.3, 3, 3.0)))
+        import ifcopenshell
+        ifcopenshell.contain(beam, other.by_guid(guid(902)))
+        lot = self.props.lots.add()
+        lot.name, lot.path = "STR", path
+        self.props.rules_path, self.props.check_structure, self.props.check_clashes = "", False, True
+        rule = self.props.clash_rules.add()
+        rule.other, rule.selector_a, rule.selector_b = "STR", "IfcDuctSegment", "IfcBeam"
+        self.run_recette()
+        return next(i for i, a in enumerate(self.ops.last_result().anomalies) if a["source"] == "Conflit")
+
+    def test_conflict_shown_in_3d(self):
+        ops, ctx, props, bpy = self.ops, self.context, self.props, self.bpy
+        index = self.coordination()
+        select = ops.CHECKERS_OT_select_anomaly()
+        select.index = index
+        self.assertEqual(select.execute(ctx), {"FINISHED"})
+        self.assertIn("1 élément(s) du lot « STR » affiché(s) en filaire", select.reports[-1][1])
+        self.assertEqual(self.scene.cursor.location, (2.15, 0.2, 2.8))
+        self.assertEqual(self.space.region_3d.view_location, (2.15, 0.2, 2.8))
+        collection = bpy.data.collections["Checkers – conflit"]
+        ghost = next(o for o in collection.objects if o.data is not None)
+        self.assertEqual((ghost.display_type, ghost.show_in_front, len(ghost.data.polygons)), ("WIRE", True, 12))
+        self.assertTrue(ghost.name.startswith("IfcBeam « Poutre »"))
+        self.assertIn("1 conflit(s)", props.conflict_position)
+
+        step = ops.CHECKERS_OT_step_conflict()
+        step.direction = 1
+        self.assertTrue(step.poll(ctx))
+        self.assertEqual(step.execute(ctx), {"FINISHED"})
+        self.assertEqual(props.conflict_position, "Conflit 1 / 1")
+        self.assertEqual(len(bpy.data.collections), 1)                     # l'affichage précédent est remplacé
+
+        # Scène décalée par Bonsai (grandes coordonnées) : le point suit.
+        self.tool.Georeference.props = types.SimpleNamespace(
+            has_blender_offset=True, blender_offset_x="2", blender_offset_y="0", blender_offset_z="",
+            blender_x_axis_abscissa="1", blender_x_axis_ordinate="0")
+        try:
+            step.execute(ctx)
+            x, y, z = self.scene.cursor.location
+            self.assertAlmostEqual(x, 0.15)
+            ghost = next(o for o in bpy.data.collections["Checkers – conflit"].objects if o.data is not None)
+            self.assertAlmostEqual(min(v[0] for v in ghost.data.vertices), 0.0)     # poutre de x = 2 à 2,3
+        finally:
+            self.tool.Georeference.props = None
+
+        # Rien d'éphémère n'est enregistré dans le .blend.
+        self.bpy.app.handlers.save_pre[0](None)
+        self.assertEqual((len(bpy.data.collections), len(bpy.data.meshes), props.conflict_position), (0, 0, ""))
+        select.execute(ctx)
+        ops.CHECKERS_OT_clear_conflict_view().execute(ctx)
+        self.assertEqual(len(bpy.data.collections), 0)
+
+        # Lot introuvable entre-temps : signalé, pas d'erreur.
+        os.remove(dict(self.ops.last_result().settings.lots)["STR"])
+        self.ops.viewer.forget_lots()
+        self.assertEqual(select.execute(ctx), {"FINISHED"})
+        self.assertIn("maquette du lot illisible", select.reports[-1][1])
+
+    def test_admit_and_revoke_from_the_panel(self):
+        ops, ctx, props = self.ops, self.context, self.props
+        index = self.coordination()
+        self.assertEqual(props.verdict, recette.RESERVED)
+        admit = ops.CHECKERS_OT_admit_anomaly()
+        admit.index, admit.reason, admit.scope, admit.all_lots = index, "", "all", False
+        self.assertEqual(admit.execute(ctx), {"CANCELLED"})                 # motif obligatoire
+        self.assertIn("motif", admit.reports[-1][1])
+
+        admit.scope, admit.reason = "selected", "Gaine dans sa réservation"
+        ctx.selected_objects = []
+        self.assertEqual(admit.execute(ctx), {"CANCELLED"})
+        self.assertIn("Aucun élément sélectionné", admit.reports[-1][1])
+        from test_coordination import DUCT
+        ctx.selected_objects = [self.tool.Ifc.objects[DUCT]]
+        self.assertEqual(admit.execute(ctx), {"FINISHED"}, admit.reports)
+        path = os.path.join(self.dir, "CVC.derogations.json")
+        self.assertEqual(props.derogations_path, path)                     # créé à côté de la maquette
+        self.assertEqual(props.verdict, recette.VALIDATED)
+        self.assertEqual((len(props.admitted), props.admitted[0].reason), (1, "Gaine dans sa réservation"))
+        self.assertIn("1 admise(s)", props.warnings.replace("anomalie(s) ", ""))
+
+        # La dérogation vaut pour la recette suivante.
+        self.run_recette()
+        self.assertEqual((props.verdict, len(props.admitted)), (recette.VALIDATED, 1))
+        self.export(ops.CHECKERS_OT_export_bcf, ".bcf")                    # sujet clos
+
+        revoke = ops.CHECKERS_OT_revoke_derogation()
+        revoke.index = 0
+        self.assertEqual(revoke.execute(ctx), {"FINISHED"})
+        self.assertEqual((props.verdict, len(props.admitted)), (recette.RESERVED, 0))
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["derogations"], [])
+
+    def test_admit_needs_a_file_when_the_model_is_not_saved(self):
+        self.run_recette()
+        admit = self.ops.CHECKERS_OT_admit_anomaly()
+        admit.index, admit.reason, admit.scope, admit.all_lots = 0, "Motif", "all", False
+        self.assertEqual(admit.execute(self.context), {"CANCELLED"})
+        self.assertIn("fichier des dérogations", admit.reports[-1][1])
+
     def test_panels_draw_with_valid_properties_and_operators(self):
         """Dessine chaque section du panneau avec une mise en page simulée,
         qui refuse une propriété ou un opérateur inexistant et une icône qui
@@ -370,6 +482,14 @@ class ExtensionTest(unittest.TestCase):
         row.draw_item(self.context, Layout(), None, self.props.anomalies[0], 0, None, "", 0)
         ui.CHECKERS_UL_lots().draw_item(self.context, Layout(), None, self.props.lots[0], 0, None, "", 0)
         ui.CHECKERS_UL_clash_rules().draw_item(self.context, Layout(), None, self.props.clash_rules[0], 0, None, "", 0)
+        admitted = self.props.admitted.add()
+        admitted.count, admitted.requirement, admitted.ifc_class, admitted.level = 1, "Exigence", "IfcWall", "RDC"
+        admitted.source, admitted.reason = "PSet", "Motif de la dérogation"
+        self.props.conflict_position = "Conflit 1 / 3"
+        ui.CHECKERS_UL_admitted().draw_item(self.context, Layout(), None, admitted, 0, None, "", 0)
+        draw_all()
+        self.assertIn("Motif de la dérogation", Layout.drawn)
+        self.assertIn("Conflit 1 / 3", Layout.drawn)
         self.assertIn("Conflit interne (intersection, 1 cm)", Layout.drawn)
         self.tool.Ifc.file = None                                    # sans modèle : suivi et installation seulement
         Layout.drawn.clear()

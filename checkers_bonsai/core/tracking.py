@@ -59,6 +59,11 @@ def open_anomalies(record: dict) -> int:
     return sum(max(len(a["guids"]), 1) for a in record["anomalies"])
 
 
+def admitted_anomalies(record: dict) -> int:
+    """Anomalies admises par dérogation, comptées de la même façon."""
+    return sum(max(len(a["guids"]), 1) for a in record.get("admitted", []))
+
+
 def _key(record: dict) -> tuple:
     model = record["model"]
     return (str(model.get("project_guid") or model.get("project") or ""), record.get("lot", ""))
@@ -78,6 +83,7 @@ def summarize(records: list) -> list:
             "project": str(last["model"].get("project") or ""), "lot": last.get("lot", ""),
             "phase": last.get("phase", ""), "date": last["_date"], "verdict": last.get("verdict", ""),
             "open": opened, "delta": opened - open_anomalies(previous) if previous else None,
+            "admitted": admitted_anomalies(last),
             "count": len(history), "first": history[0]["_date"],
             "file": str((last["model"].get("file") or {}).get("name") or ""),
         })
@@ -132,21 +138,21 @@ def write_tracking(path: str, records: list, rejected=(), marking: str = "", dat
 
     summary_columns = (("Projet", 30), ("Lot", 26), ("Phase", 22), ("Dernière recette", 16), ("Verdict", 22),
                        ("Anomalies ouvertes", 14), ("Évolution depuis la recette précédente", 20),
-                       ("Nombre de recettes", 12), ("Première recette", 16), ("Maquette", 30))
+                       ("Anomalies admises", 12), ("Nombre de recettes", 12), ("Première recette", 16), ("Maquette", 30))
     ws = sheet("Synthèse", summary_columns, first=True)
     rows = summarize(records)
     for r, row in enumerate(rows, 2):
         # Écart écrit comme un nombre, affiché avec son signe (« +3 », « -2 »).
         fill_row(ws, r, [row["project"], row["lot"], row["phase"], row["date"], row["verdict"], row["open"],
-                         row["delta"], row["count"], row["first"], row["file"]], 5,
-                 {4: "DD/MM/YYYY", 7: "+0;-0;0", 9: "DD/MM/YYYY"})
+                         row["delta"], row["admitted"], row["count"], row["first"], row["file"]], 5,
+                 {4: "DD/MM/YYYY", 7: "+0;-0;0", 10: "DD/MM/YYYY"})
     last = len(rows) + 1
     ws.auto_filter.ref = f"A1:{get_column_letter(len(summary_columns))}{max(last, 1)}"
     note_row = last + 2
     notes = [f"Tableau produit le {date.strftime('%d/%m/%Y %H:%M') if date else '—'} à partir de "
              f"{len(records)} journal(aux) de recette.",
              "Anomalies ouvertes : décompte par élément et par exigence. Évolution : écart avec la recette "
-             "précédente du même lot (négatif = anomalies en baisse)."]
+             "précédente du même lot (négatif = anomalies en baisse). Anomalies admises : par dérogation, hors verdict."]
     notes += [f"Journal refusé : {name} ({reason})" for name, reason in rejected]
     if marking:
         notes.insert(0, marking)
@@ -156,7 +162,7 @@ def write_tracking(path: str, records: list, rejected=(), marking: str = "", dat
     recette_columns = (("Date", 16), ("Projet", 30), ("Lot", 26), ("Phase", 22), ("Maquette", 30), ("Verdict", 22),
                        ("Structure", 20), ("IDS", 20), ("Taux IDS", 10), ("Règles Excel", 20), ("Taux PSet", 10),
                        ("Terrain", 20), ("Taux terrain", 10), ("Cohérence entre lots", 20), ("Conflits", 20),
-                       ("Anomalies ouvertes", 14), ("Réalisée par", 22), ("Journal", 40))
+                       ("Anomalies ouvertes", 14), ("Anomalies admises", 12), ("Réalisée par", 22), ("Journal", 40))
     ws = sheet("Recettes", recette_columns)
     for r, record in enumerate(records, 2):
         model = record["model"]
@@ -165,7 +171,8 @@ def write_tracking(path: str, records: list, rejected=(), marking: str = "", dat
             str((model.get("file") or {}).get("name") or ""), record.get("verdict", ""),
             _verdict(record, "structure"), _verdict(record, "ids"), _rate(record, "ids"),
             _verdict(record, "pset"), _rate(record, "pset"), _verdict(record, "survey"), _rate(record, "survey"),
-            _verdict(record, "federation"), _verdict(record, "clashes"), open_anomalies(record), record.get("tester", "") if isinstance(record.get("tester", ""), str) else "",
+            _verdict(record, "federation"), _verdict(record, "clashes"), open_anomalies(record), admitted_anomalies(record),
+            record.get("tester", "") if isinstance(record.get("tester", ""), str) else "",
             record["_file"]], 6, {1: "DD/MM/YYYY HH:MM", 9: "0.0%", 11: "0.0%", 13: "0.0%"})
     ws.auto_filter.ref = f"A1:{get_column_letter(len(recette_columns))}{max(len(records) + 1, 1)}"
 

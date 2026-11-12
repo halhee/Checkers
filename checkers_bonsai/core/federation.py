@@ -16,6 +16,7 @@ import os
 from collections import Counter, defaultdict
 
 import ifcopenshell
+import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.unit
 
@@ -140,18 +141,44 @@ def _storeys(ifc_file, scale) -> dict:
     return result
 
 
+def _number(value, default: float) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _pset(entity, name: str) -> dict:
+    try:
+        return ifcopenshell.util.element.get_pset(entity, name) or {}
+    except Exception:
+        return {}
+
+
 def _map_conversion(ifc_file):
+    """Géoréférencement : IfcMapConversion (IFC4 et après), ou, en IFC2X3,
+    les jeux de propriétés ePSet_MapConversion et ePSet_ProjectedCRS de
+    l'IfcProject (guide buildingSMART du géoréférencement)."""
     conversions = _by_type(ifc_file, "IfcMapConversion")
-    if not conversions:
-        return None
-    c = conversions[0]
-    abscissa = c.XAxisAbscissa if c.XAxisAbscissa is not None else 1.0
-    ordinate = c.XAxisOrdinate if c.XAxisOrdinate is not None else 0.0
-    crs = getattr(getattr(c, "TargetCRS", None), "Name", None) or ""
-    return {"entity": c, "eastings": float(c.Eastings or 0.0), "northings": float(c.Northings or 0.0),
-            "height": float(c.OrthogonalHeight or 0.0),
-            "rotation": math.degrees(math.atan2(float(ordinate), float(abscissa))),
-            "scale": float(c.Scale) if c.Scale is not None else 1.0, "crs": str(crs)}
+    if conversions:
+        c = conversions[0]
+        values = {key: getattr(c, key, None) for key in ("Eastings", "Northings", "OrthogonalHeight",
+                                                          "XAxisAbscissa", "XAxisOrdinate", "Scale")}
+        entity, crs = c, getattr(getattr(c, "TargetCRS", None), "Name", None) or ""
+    else:
+        project = _project(ifc_file)
+        values = _pset(project, "ePSet_MapConversion") if project is not None else {}
+        if not any(values.get(key) is not None for key in ("Eastings", "Northings", "OrthogonalHeight")):
+            return None
+        entity, crs = project, _pset(project, "ePSet_ProjectedCRS").get("Name") or ""
+    abscissa, ordinate = _number(values.get("XAxisAbscissa"), 1.0), _number(values.get("XAxisOrdinate"), 0.0)
+    if abscissa == 0.0 and ordinate == 0.0:
+        abscissa = 1.0
+    return {"entity": entity, "eastings": _number(values.get("Eastings"), 0.0),
+            "northings": _number(values.get("Northings"), 0.0),
+            "height": _number(values.get("OrthogonalHeight"), 0.0),
+            "rotation": math.degrees(math.atan2(ordinate, abscissa)),
+            "scale": _number(values.get("Scale"), 1.0), "crs": str(crs)}
 
 
 def _true_north(ifc_file):

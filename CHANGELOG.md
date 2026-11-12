@@ -1,5 +1,15 @@
 # Historique des versions
 
+## 0.7.0
+
+Nouveautés :
+- Dérogations : une anomalie peut être admise depuis le panneau, avec un motif obligatoire, pour tous ses éléments ou seulement ceux sélectionnés, pour le lot ou pour tous les lots. Elle sort du verdict et des taux, qui sont recalculés aussitôt sans relancer les contrôles, et vaut pour les recettes suivantes. Fiche : onglet « Dérogations » (anomalies admises, dérogations sans objet) et empreinte du fichier ; BCF : sujet clos avec le motif ; journal et suivi : anomalies admises comptées à part. Une dérogation se retire depuis le panneau.
+- Conflits dans la vue 3D : vue centrée sur le point de conflit, curseur et repère posés dessus, élément de l'autre lot affiché en filaire par-dessus la maquette, navigation conflit par conflit. Objets temporaires, jamais enregistrés dans le `.blend` ; décalage de scène de Bonsai pris en compte.
+
+Corrections :
+- Cohérence entre lots (C07) : en IFC2X3, le géoréférencement porté par les jeux de propriétés `ePSet_MapConversion` et `ePSet_ProjectedCRS` n'était pas lu, et le contrôle répondait « conforme » sans rien comparer.
+- Conflits : changer la tolérance d'une règle faisait passer tous ses conflits pour nouveaux à la recette suivante et dupliquait les sujets BCF. Le suivi ignore désormais la distance de la règle (pas son mode). Conséquence unique : les sujets BCF de conflits créés en 0.6.0 reçoivent un nouvel identifiant.
+
 ## 0.6.0
 
 Nouveautés :

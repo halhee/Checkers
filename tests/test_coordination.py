@@ -105,6 +105,30 @@ class FederationTest(unittest.TestCase):
         _, checks = self.check(georef=False)
         self.assertEqual(checks["C07"]["message"], "géoréférencement présent dans un seul des deux lots")
 
+    def test_ifc2x3_georeferencing_in_property_sets(self):
+        """En IFC2X3, le géoréférencement est porté par des jeux de propriétés
+        de l'IfcProject : C07 doit les comparer, pas répondre « ok » à vide."""
+        def georef(model, eastings):
+            model.by_type("IfcProject")[0]._psets = {
+                "ePSet_MapConversion": {"Eastings": eastings, "Northings": 6862000.0, "OrthogonalHeight": 35.0,
+                                        "XAxisAbscissa": 1.0, "XAxisOrdinate": 0.0, "Scale": 1.0},
+                "ePSet_ProjectedCRS": {"Name": "EPSG:2154"}}
+        current = frame(build_model(), georef=False)
+        georef(current, 652000.0)
+        other, path = other_lot(self.dir, georef=False)
+        georef(other, 652003.0)
+        result = federation.check_federation(current, lots(self.dir, ("STR", path)), spatial.LevelCache())
+        c07 = {c["code"]: c for c in result["checks"]}["C07"]
+        self.assertEqual(c07["status"], "ko")
+        self.assertIn("décalé de 3.000", c07["message"])
+        georef(other, 652000.0)
+        result = federation.check_federation(current, lots(self.dir, ("STR", path)), spatial.LevelCache())
+        self.assertEqual({c["code"]: c for c in result["checks"]}["C07"]["status"], "ok")
+        other.by_type("IfcProject")[0]._psets = {}
+        result = federation.check_federation(current, lots(self.dir, ("STR", path)), spatial.LevelCache())
+        self.assertEqual({c["code"]: c for c in result["checks"]}["C07"]["message"],
+                         "géoréférencement présent dans un seul des deux lots")
+
     def test_storey_named_differently_and_project(self):
         other, path = other_lot(self.dir)
         other.by_guid(guid(902)).Name = "Rez-de-chaussée"
@@ -312,6 +336,24 @@ class CoordinationRecetteTest(unittest.TestCase):
         row = [c.value for c in load_workbook(table)["Recettes"][2]]
         self.assertEqual(row[header.index("Conflits")], recette.RESERVED)
         self.assertEqual(row[header.index("Cohérence entre lots")], recette.RESERVED)
+
+    def test_tolerance_change_keeps_tracking(self):
+        """Régler la tolérance d'une règle ne fait pas passer ses conflits pour
+        nouveaux, ni ne duplique les sujets BCF."""
+        first = self.recette()
+        path = os.path.join(self.dir, "recette.json")
+        journal.write_record(first, path)
+        rule = clashes.ClashRule(other="STR", selector_a="IfcDuctSegment", selector_b="IfcBeam", distance=0.05)
+        second = self.recette(clash_rules=[rule], previous_path=path)
+        self.assertEqual((second.evolution["new_count"], second.evolution["persistent_count"]), (0, 2))
+        conflict = [a for a in (first.anomalies, second.anomalies)]
+        before, after = (next(a for a in group if a["source"] == "Conflit") for group in conflict)
+        self.assertNotEqual(before["requirement"], after["requirement"])
+        self.assertEqual(bcf.topic_guid("p", "CVC", before), bcf.topic_guid("p", "CVC", after))
+        changed = clashes.ClashRule(other="STR", selector_a="IfcDuctSegment", selector_b="IfcBeam", mode="collision")
+        third = self.recette(clash_rules=[changed])
+        other_mode = next(a for a in third.anomalies if a["source"] == "Conflit")
+        self.assertNotEqual(bcf.topic_guid("p", "CVC", before), bcf.topic_guid("p", "CVC", other_mode))
 
     def test_lots_record_validation(self):
         record = journal.to_record(self.recette())

@@ -6,11 +6,11 @@ from datetime import datetime
 import bpy
 from bpy_extras.io_utils import ExportHelper
 
-from . import bonsai_link
-from .core import bcf, clashes, diagnostic, journal, recette
+from . import bonsai_link, viewer
+from .core import bcf, clashes, derogations, diagnostic, journal, recette
 from .core.federation import CURRENT, lot_name
 from .core.spatial import LevelCache
-from .core.trace import model_info
+from .core.trace import file_info, model_info
 from .props import ALL_RULES
 
 EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "examples")
@@ -25,7 +25,9 @@ def _missing_library(exc: ImportError) -> str:
 # dans le fichier .blend. `model` désigne le modèle contrôlé, pour détecter
 # qu'un autre projet a été ouvert depuis. `colors` et `color_types` gardent
 # l'affichage d'origine, pour la réinitialisation.
-_state = {"result": None, "model": None, "colors": {}, "shading": {}}
+# `conflict` : (n° de l'anomalie, n° du conflit affiché, -1 pour la vue
+# d'ensemble) pendant la navigation entre conflits.
+_state = {"result": None, "model": None, "colors": {}, "shading": {}, "conflict": None}
 
 COLOR_VALID = (0.30, 0.75, 0.35, 1.0)
 COLOR_INVALID = (0.90, 0.20, 0.20, 1.0)
@@ -65,6 +67,9 @@ def clear_results(props) -> None:
     props.invalid_count = 0
     props.anomalies.clear()
     props.anomaly_index = 0
+    props.admitted.clear()
+    props.admitted_index = 0
+    props.conflict_position = ""
 
 
 @bpy.app.handlers.persistent
@@ -72,13 +77,26 @@ def on_load_post(*_):
     """À l'ouverture d'un fichier, la recette en mémoire ne correspond plus à
     rien : le panneau repart sans résultat plutôt que d'afficher un ancien
     verdict."""
-    _state.update(result=None, model=None)
+    _state.update(result=None, model=None, conflict=None)
     _state["colors"].clear()
     _state["shading"].clear()
+    viewer.forget_lots()
     for scene in bpy.data.scenes:
         props = getattr(scene, "checkers", None)
         if props is not None:
             clear_results(props)
+
+
+@bpy.app.handlers.persistent
+def on_save_pre(*_):
+    """Les objets d'affichage d'un conflit sont temporaires : ils ne doivent
+    pas être enregistrés dans le fichier .blend."""
+    viewer.clear()
+    _state["conflict"] = None
+    for scene in bpy.data.scenes:
+        props = getattr(scene, "checkers", None)
+        if props is not None:
+            props.conflict_position = ""
 
 
 def _pct(rate: float) -> str:
@@ -99,7 +117,7 @@ def _settings(props) -> recette.RecetteSettings:
         ids_path=path(props.ids_path), rules_path=path(props.rules_path),
         corps_etat=None if props.corps_etat in ("", ALL_RULES) else props.corps_etat,
         check_structure=props.check_structure, survey_path=path(props.survey_path),
-        previous_path=path(props.previous_path),
+        previous_path=path(props.previous_path), derogations_path=path(props.derogations_path),
         lot=props.lot.strip(), phase=props.phase.strip(), tester=props.tester.strip(),
         marking=props.marking_text(), threshold_ok=props.threshold_ok, threshold_reserve=props.threshold_reserve,
     )
@@ -129,6 +147,81 @@ def _summary(result) -> str:
                 found = f"{outcome['total']} conflit(s)" + (f" — {found}" if found else "")
             lines.append(f"{label} : {found or 'aucun constat'}")
     return "\n".join(lines)
+
+
+def _show_result(props, result) -> None:
+    """Recopie dans le panneau le résumé d'une recette (après la recette, ou
+    quand une dérogation est accordée ou retirée)."""
+    index = props.anomaly_index
+    clear_results(props)
+    props.has_result = True
+    props.verdict = result.verdict
+    props.summary = _summary(result)
+    props.warnings = "\n".join(result.warnings)
+    props.invalid_count = len(result.invalid_guids)
+    if result.evolution is not None:
+        e = result.evolution
+        props.evolution = (f"Depuis le {e['previous_date']:%d/%m/%Y} : {e['resolved_count']} levée(s), "
+                           f"{e['persistent_count']} persistante(s), {e['new_count']} nouvelle(s)")
+        if e.get("admitted_count"):
+            props.evolution += f", {e['admitted_count']} admise(s)"
+    for anomaly in result.anomalies:
+        item = props.anomalies.add()
+        item.level, item.ifc_class = anomaly["level"], anomaly["ifc_class"]
+        item.requirement, item.source = anomaly["requirement"], anomaly["source"]
+        item.severity, item.count = anomaly["severity"] or "", anomaly["count"]
+    for anomaly in result.admitted:
+        item = props.admitted.add()
+        item.level, item.ifc_class = anomaly["level"], anomaly["ifc_class"]
+        item.requirement, item.source = anomaly["requirement"], anomaly["source"]
+        item.severity, item.count = anomaly["severity"] or "", anomaly["count"]
+        item.reason, item.derogation_id = anomaly["derogation"]["reason"], anomaly["derogation"]["id"]
+    props.anomaly_index = min(index, max(len(result.anomalies) - 1, 0))
+
+
+def _select_guids(context, guids) -> tuple:
+    """Sélectionne les objets des éléments ; (visibles, objets, sans objet)."""
+    objects, missing = bonsai_link.objects_for_guids(guids)
+    for obj in context.selected_objects:
+        obj.select_set(False)
+    visible = []
+    for obj in objects:
+        # Un objet hors du calque de vue courant ne peut pas être
+        # sélectionné : Blender lève alors une erreur.
+        try:
+            if obj.visible_get():
+                obj.select_set(True)
+                visible.append(obj)
+        except RuntimeError:
+            continue
+    if visible:
+        context.view_layer.objects.active = visible[0]
+    return visible, objects, missing
+
+
+def _lot_path(result, name: str) -> str:
+    return dict(result.settings.lots).get(name, "") if name and name != CURRENT else ""
+
+
+def _show_conflict(context, result, anomaly, position: int) -> str:
+    """Affiche un conflit de l'anomalie (position ≥ 0) ou tous ses éléments
+    (position -1) ; retourne le complément du message."""
+    conflicts = anomaly.get("conflicts") or []
+    external = anomaly.get("lot") not in (None, "", CURRENT)
+    if position < 0:
+        point, others = anomaly.get("point"), anomaly.get("related_guids") or []
+    else:
+        conflict = conflicts[position]
+        point, others = conflict["point"], [conflict["b"]] if external else []
+    outcome = viewer.show_conflict(context, point, _lot_path(result, anomaly.get("lot")) if external else "", others)
+    message = ""
+    if outcome["shown"]:
+        message += f", {outcome['shown']} élément(s) du lot « {anomaly['lot']} » affiché(s) en filaire"
+    if outcome["missing"]:
+        message += f", {outcome['missing']} introuvable(s) dans ce lot"
+    if outcome["error"]:
+        message += f" ({outcome['error']})"
+    return message
 
 
 def _default_name(prefix: str, label: str, date: datetime, extension: str) -> str:
@@ -173,24 +266,15 @@ class CHECKERS_OT_run_recette(bpy.types.Operator):
         finally:
             wm.progress_end()
 
-        _state.update(result=result, model=_model_token(ifc_file))
-        clear_results(props)
-        props.has_result = True
-        props.verdict = result.verdict
-        props.summary = _summary(result)
-        props.warnings = "\n".join(result.warnings)
-        props.invalid_count = len(result.invalid_guids)
-        if result.evolution is not None:
-            e = result.evolution
-            props.evolution = (f"Depuis le {e['previous_date']:%d/%m/%Y} : {e['resolved_count']} levée(s), "
-                               f"{e['persistent_count']} persistante(s), {e['new_count']} nouvelle(s)")
-        for anomaly in result.anomalies:
-            item = props.anomalies.add()
-            item.level, item.ifc_class = anomaly["level"], anomaly["ifc_class"]
-            item.requirement, item.source = anomaly["requirement"], anomaly["source"]
-            item.severity, item.count = anomaly["severity"] or "", anomaly["count"]
+        viewer.clear()
+        _state.update(result=result, model=_model_token(ifc_file), conflict=None)
+        props.anomaly_index = 0
+        _show_result(props, result)
+        message = ""
+        if result.admitted:
+            message = f" ({len(result.admitted)} admise(s) par dérogation)"
         self.report({"INFO"}, f"Recette terminée en {result.duration_s:.1f} s : {result.verdict}, "
-                              f"{len(result.anomalies)} anomalie(s)")
+                              f"{len(result.anomalies)} anomalie(s){message}")
         return {"FINISHED"}
 
 
@@ -212,35 +296,219 @@ class CHECKERS_OT_select_anomaly(bpy.types.Operator):
         if not 0 <= index < len(result.anomalies):
             return {"CANCELLED"}
         props.anomaly_index = index
-        guids = result.anomalies[index]["guids"]
+        anomaly = result.anomalies[index]
+        guids = anomaly["guids"]
+        viewer.clear()
+        _state["conflict"], props.conflict_position = None, ""
         if not guids:
             self.report({"INFO"}, "Ce constat porte sur le modèle entier, pas sur des éléments précis.")
             return {"FINISHED"}
-        objects, missing = bonsai_link.objects_for_guids(guids)
-        for obj in context.selected_objects:
-            obj.select_set(False)
-        visible = []
-        for obj in objects:
-            # Un objet hors du calque de vue courant ne peut pas être
-            # sélectionné : Blender lève alors une erreur.
-            try:
-                if obj.visible_get():
-                    obj.select_set(True)
-                    visible.append(obj)
-            except RuntimeError:
-                continue
-        if visible:
-            context.view_layer.objects.active = visible[0]
-            region = next((r for r in context.area.regions if r.type == "WINDOW"), None) if context.area else None
-            if region is not None and context.area.type == "VIEW_3D":
-                with context.temp_override(area=context.area, region=region):
-                    bpy.ops.view3d.view_selected()
+        visible, objects, missing = _select_guids(context, guids)
         message = f"{len(visible)} élément(s) sélectionné(s)"
         if len(objects) > len(visible):
             message += f", {len(objects) - len(visible)} masqué(s)"
         if missing:
             message += f", {missing} sans objet dans la scène"
+        if anomaly.get("conflicts"):
+            # Vue centrée sur le premier conflit plutôt que cadrage de tous
+            # les éléments, qui peuvent être longs (gaines, réseaux).
+            message += _show_conflict(context, result, anomaly, -1)
+            _state["conflict"] = (index, -1)
+            count = len(anomaly["conflicts"])
+            props.conflict_position = f"{count} conflit(s) : flèches pour les parcourir un à un"
+        elif visible:
+            region = next((r for r in context.area.regions if r.type == "WINDOW"), None) if context.area else None
+            if region is not None and context.area.type == "VIEW_3D":
+                with context.temp_override(area=context.area, region=region):
+                    bpy.ops.view3d.view_selected()
         self.report({"INFO"} if visible else {"WARNING"}, message)
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_step_conflict(bpy.types.Operator):
+    bl_idname = "checkers.step_conflict"
+    bl_label = "Conflit suivant"
+    bl_description = ("Passe au conflit suivant (ou précédent) de l'anomalie : sélectionne l'élément, centre la vue "
+                      "sur le point de conflit et affiche l'élément de l'autre lot")
+    bl_options = {"REGISTER", "UNDO"}
+
+    direction: bpy.props.IntProperty(default=1)
+
+    @classmethod
+    def poll(cls, context):
+        result = usable_result()
+        index = context.scene.checkers.anomaly_index
+        return result is not None and 0 <= index < len(result.anomalies) \
+            and bool(result.anomalies[index].get("conflicts"))
+
+    def execute(self, context):
+        props = context.scene.checkers
+        result = usable_result()
+        if result is None:
+            self.report({"WARNING"}, "Le modèle a changé depuis la recette : relancez-la.")
+            return {"CANCELLED"}
+        index = props.anomaly_index
+        if not 0 <= index < len(result.anomalies) or not result.anomalies[index].get("conflicts"):
+            return {"CANCELLED"}
+        anomaly = result.anomalies[index]
+        conflicts = anomaly["conflicts"]
+        current = _state["conflict"][1] if _state["conflict"] and _state["conflict"][0] == index else -1
+        if current < 0:
+            position = 0 if self.direction >= 0 else len(conflicts) - 1
+        else:
+            position = (current + (1 if self.direction >= 0 else -1)) % len(conflicts)
+        conflict = conflicts[position]
+        internal = anomaly.get("lot") in (None, "", CURRENT)
+        visible, _, _ = _select_guids(context, [conflict["a"], conflict["b"]] if internal else [conflict["a"]])
+        message = _show_conflict(context, result, anomaly, position)
+        _state["conflict"] = (index, position)
+        props.conflict_position = f"Conflit {position + 1} / {len(conflicts)}"
+        if anomaly.get("pairs", 0) > len(conflicts):
+            props.conflict_position += f" (sur {anomaly['pairs']})"
+        self.report({"INFO"}, f"{props.conflict_position} : {len(visible)} élément(s) sélectionné(s){message}")
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_clear_conflict_view(bpy.types.Operator):
+    bl_idname = "checkers.clear_conflict_view"
+    bl_label = "Effacer"
+    bl_description = "Efface le repère du point de conflit et les éléments de l'autre lot affichés en filaire"
+
+    def execute(self, context):
+        viewer.clear()
+        _state["conflict"] = None
+        context.scene.checkers.conflict_position = ""
+        return {"FINISHED"}
+
+
+def _derogations_target(props) -> str:
+    """Fichier des dérogations : celui choisi, sinon un fichier à côté de la
+    maquette (le champ est alors renseigné)."""
+    if props.derogations_path:
+        return bpy.path.abspath(props.derogations_path)
+    model_path = bonsai_link.current_ifc_path()
+    if not model_path:
+        return ""
+    path = derogations.default_path(model_path)
+    props.derogations_path = path
+    return path
+
+
+def _apply_derogations(result, document, path) -> None:
+    """Recalcule verdicts, couleurs et évolution sans relancer les contrôles."""
+    result.settings.derogations_path = path
+    result.derogation_doc = document
+    result.derogations = file_info(path)
+    recette.finalize(result)
+
+
+class CHECKERS_OT_admit_anomaly(bpy.types.Operator):
+    bl_idname = "checkers.admit_anomaly"
+    bl_label = "Admettre par dérogation"
+    bl_description = ("Admet cette anomalie, avec un motif : elle sort du verdict et figure sur la fiche dans "
+                      "l'onglet « Dérogations ». Enregistrée dans le fichier des dérogations, elle vaut aussi pour "
+                      "les recettes suivantes, pour ces éléments seulement")
+    bl_options = {"REGISTER", "UNDO"}
+
+    index: bpy.props.IntProperty(default=-1)
+    reason: bpy.props.StringProperty(name="Motif", description="Pourquoi cette anomalie est admise, par qui elle a "
+                                                               "été décidée (obligatoire)")
+    scope: bpy.props.EnumProperty(name="Portée", items=[
+        ("all", "Tous les éléments de l'anomalie", ""),
+        ("selected", "Seulement les éléments sélectionnés dans la vue 3D", "")])
+    all_lots: bpy.props.BoolProperty(name="Valable pour tous les lots", default=False,
+                                     description="Sinon, la dérogation ne vaut que pour le lot de cette recette")
+
+    @classmethod
+    def poll(cls, context):
+        return usable_result() is not None
+
+    def invoke(self, context, event):
+        if self.index >= 0:
+            context.scene.checkers.anomaly_index = self.index
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "reason")
+        layout.prop(self, "scope")
+        layout.prop(self, "all_lots")
+
+    def execute(self, context):
+        props = context.scene.checkers
+        result = usable_result()
+        if result is None:
+            self.report({"WARNING"}, "Le modèle a changé depuis la recette : relancez-la.")
+            return {"CANCELLED"}
+        index = self.index if self.index >= 0 else props.anomaly_index
+        if not 0 <= index < len(result.anomalies):
+            return {"CANCELLED"}
+        anomaly = result.anomalies[index]
+        guids = None
+        if self.scope == "selected":
+            selected = {bonsai_link.guid_of(obj) for obj in context.selected_objects}
+            guids = [g for g in anomaly["guids"] if g in selected]
+            if not guids:
+                self.report({"ERROR"}, "Aucun élément sélectionné ne fait partie de cette anomalie.")
+                return {"CANCELLED"}
+        path = _derogations_target(props)
+        if not path:
+            self.report({"ERROR"}, "Choisissez le fichier des dérogations (section Recette) : la maquette n'est pas "
+                                   "enregistrée sur disque.")
+            return {"CANCELLED"}
+        try:
+            document = derogations.load_or_new(path)
+            entry = derogations.make_entry(anomaly, self.reason, author=result.settings.tester,
+                                           lot="" if self.all_lots else result.settings.lot, guids=guids)
+            derogations.add(document, entry)
+            derogations.save(document, path)
+        except (derogations.DerogationError, OSError) as exc:
+            self.report({"ERROR"}, f"Dérogation impossible : {exc}")
+            return {"CANCELLED"}
+        _apply_derogations(result, document, path)
+        _show_result(props, result)
+        viewer.clear()
+        _state["conflict"] = None
+        count = len(entry["guids"]) or anomaly["count"]
+        self.report({"INFO"}, f"{count} élément(s) ou constat(s) admis. Verdict : {result.verdict}. "
+                              f"Dérogation enregistrée dans {os.path.basename(path)}")
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_revoke_derogation(bpy.types.Operator):
+    bl_idname = "checkers.revoke_derogation"
+    bl_label = "Retirer la dérogation"
+    bl_description = "Retire cette dérogation du fichier : l'anomalie redevient ouverte et compte dans le verdict"
+    bl_options = {"REGISTER", "UNDO"}
+
+    index: bpy.props.IntProperty(default=-1)
+
+    @classmethod
+    def poll(cls, context):
+        result = usable_result()
+        return result is not None and bool(result.admitted)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        props = context.scene.checkers
+        result = usable_result()
+        index = self.index if self.index >= 0 else props.admitted_index
+        if result is None or not 0 <= index < len(result.admitted):
+            return {"CANCELLED"}
+        entry_id = result.admitted[index]["derogation"]["id"]
+        path = result.settings.derogations_path
+        try:
+            document = derogations.load(path)
+            derogations.revoke(document, entry_id)
+            derogations.save(document, path)
+        except (derogations.DerogationError, OSError) as exc:
+            self.report({"ERROR"}, f"Retrait impossible : {exc}")
+            return {"CANCELLED"}
+        _apply_derogations(result, document, path)
+        _show_result(props, result)
+        self.report({"INFO"}, f"Dérogation retirée. Verdict : {result.verdict}")
         return {"FINISHED"}
 
 
@@ -369,7 +637,8 @@ class CHECKERS_OT_export_bcf(bpy.types.Operator, ExportHelper):
     @classmethod
     def poll(cls, context):
         result = usable_result()
-        return result is not None and bool(result.anomalies or (result.evolution and result.evolution["resolved"]))
+        return result is not None and bool(result.anomalies or result.admitted
+                                           or (result.evolution and result.evolution["resolved"]))
 
     def invoke(self, context, event):
         result = last_result()
@@ -388,7 +657,7 @@ class CHECKERS_OT_export_bcf(bpy.types.Operator, ExportHelper):
                 author=context.scene.checkers.bcf_author, project_name=result.model.get("project") or None,
                 project_key=result.model.get("project_guid") or "", lot=s.lot, phase=s.phase,
                 referentials=recette.describe_referentials(result), marking=s.marking,
-                resolved=result.evolution["resolved"] if result.evolution else ())
+                resolved=result.evolution["resolved"] if result.evolution else (), admitted=result.admitted)
         except Exception as exc:
             self.report({"ERROR"}, f"Enregistrement impossible : {exc}")
             return {"CANCELLED"}
@@ -635,6 +904,10 @@ class CHECKERS_OT_diagnostic(bpy.types.Operator):
 classes = (
     CHECKERS_OT_run_recette,
     CHECKERS_OT_select_anomaly,
+    CHECKERS_OT_step_conflict,
+    CHECKERS_OT_clear_conflict_view,
+    CHECKERS_OT_admit_anomaly,
+    CHECKERS_OT_revoke_derogation,
     CHECKERS_OT_color_results,
     CHECKERS_OT_reset_colors,
     CHECKERS_OT_use_example_ids,

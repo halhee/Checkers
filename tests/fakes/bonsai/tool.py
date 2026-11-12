@@ -17,3 +17,20 @@ class Ifc:
     @classmethod
     def get_object(cls, entity):
         return cls.objects.get(entity.GlobalId)
+
+    @classmethod
+    def get_entity(cls, obj):
+        try:
+            return cls.file.by_guid(obj.name)
+        except Exception:
+            return None
+
+
+class Georeference:
+    props = None
+
+    @classmethod
+    def get_georeference_props(cls):
+        if cls.props is None:
+            raise AttributeError("pas de propriétés de géoréférencement")
+        return cls.props

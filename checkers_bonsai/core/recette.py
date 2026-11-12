@@ -1,17 +1,19 @@
 """Recette d'une maquette IFC : contrôles de structure, IDS, règles Excel,
-relevé terrain, cohérence et conflits avec les autres lots, verdict, et
-comparaison avec la recette précédente.
+relevé terrain, cohérence et conflits avec les autres lots, dérogations,
+verdict, et comparaison avec la recette précédente.
 
 Indépendant de Blender : prend un modèle `ifcopenshell.file` déjà ouvert
 (celui de Bonsai) et des chemins de fichiers.
 """
 import os
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
 from . import clashes as clash_check
+from . import derogations as derogation_file
 from . import federation
 from . import ids as ids_check
 from . import journal
@@ -43,6 +45,7 @@ class RecetteSettings:
     lots: list = field(default_factory=list)          # autres lots : liste de (nom, chemin .ifc)
     check_federation: bool = True                     # cohérence de référence avec les autres lots
     clash_rules: list = field(default_factory=list)   # liste de clashes.ClashRule
+    derogations_path: str = ""                        # fichier des dérogations (.json)
     lot: str = ""
     phase: str = ""
     tester: str = ""
@@ -80,20 +83,43 @@ class RecetteResult:
     unsaved_changes: Optional[bool] = None
     warnings: list = field(default_factory=list)
     duration_s: float = 0.0
+    # Dérogations : anomalies admises (mêmes champs + « derogation »), fichier
+    # (infos, nombre de dérogations du lot, celles sans objet).
+    admitted: list = field(default_factory=list)
+    derogations: Optional[dict] = None
+    derogation_doc: Optional[dict] = None
+    # Taux après dérogations ; les résultats bruts des contrôles ne changent pas.
+    adjusted_rates: dict = field(default_factory=dict)
+    # Données brutes, pour recalculer le verdict quand une dérogation est
+    # accordée ou retirée sans relancer les contrôles (voir finalize).
+    raw_anomalies: list = field(default_factory=list)
+    base_warnings: list = field(default_factory=list)
+    previous_record: Optional[dict] = None
+    element_exists: Optional[object] = None
 
     @property
     def pset_rate(self) -> Optional[float]:
+        if "pset" in self.adjusted_rates:
+            return self.adjusted_rates["pset"]
         if not self.pset or not self.pset["checked"]:
             return None
         return self.pset["valid"] / self.pset["checked"]
 
     @property
     def ids_rate(self) -> Optional[float]:
+        if "ids" in self.adjusted_rates:
+            return self.adjusted_rates["ids"]
         return self.ids_result["pass_rate"] if self.ids_result else None
 
     @property
     def survey_rate(self) -> Optional[float]:
+        if "survey" in self.adjusted_rates:
+            return self.adjusted_rates["survey"]
         return self.survey_result["pass_rate"] if self.survey_result else None
+
+    @property
+    def admitted_elements(self) -> int:
+        return sum(a["count"] for a in self.admitted)
 
     @property
     def sources(self) -> set:
@@ -155,12 +181,15 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
     previous = journal.load_record(settings.previous_path) if settings.previous_path else None
     survey_rows = survey_check.load_survey(settings.survey_path) if settings.survey_path else None
     lots = federation.open_lots(settings.lots) if settings.lots else []
+    derogation_doc = derogation_file.load(settings.derogations_path) if settings.derogations_path else None
     if settings.clash_rules:
         clash_check.validate_rules(settings.clash_rules, {lot["name"] for lot in lots})
 
     start = time.time()
     result = RecetteResult(settings=settings, date=datetime.now(), model=model_info(ifc_file, model_path),
-                           unsaved_changes=unsaved_changes)
+                           unsaved_changes=unsaved_changes, derogation_doc=derogation_doc, previous_record=previous)
+    if derogation_doc is not None:
+        result.derogations = file_info(settings.derogations_path)
     level_of = LevelCache()
     anomalies = []
     result.lots = [{"name": lot["name"], "file_name": lot["info"].get("name", ""),
@@ -175,7 +204,6 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
 
     if settings.check_structure:
         result.structure = structure_check.check_structure(ifc_file, level_of)
-        result.structure_verdict = structure_verdict(result.structure)
         for key, item in result.structure["anomalies"].items():
             add(key, "Structure", item["guids"], item["severity"], item["count"])
         if result.structure.get("errors"):
@@ -187,7 +215,6 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
         document = ids_check.load_ids(settings.ids_path)
         result.ids = {**file_info(settings.ids_path), "title": ids_check.ids_title(document)}
         result.ids_result = ids_check.check_ids(document, ifc_file, level_of)
-        result.ids_verdict = ids_verdict(result.ids_result, settings)
         result.warnings.extend(result.ids_result["warnings"])
         for key, guids in result.ids_result["anomalies"].items():
             add(key, "IDS", guids, count=max(len(guids), 1))  # 1 = constat sur le modèle entier
@@ -207,9 +234,7 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
                         "corps_etat": f"{code} – {registry[code]}" if registry and code else "Toutes les règles"}
         result.pset = check_psets(ifc_file, rules, level_of)
         result.warnings.extend(result.pset["warnings"])
-        if result.pset["checked"]:
-            result.pset_verdict = rate_verdict(result.pset_rate, settings)
-        else:
+        if not result.pset["checked"]:
             result.warnings.append("Aucun élément du modèle n'est concerné par les règles Excel.")
         for key, guids in result.pset["anomalies"].items():
             add(key, "PSet", guids)
@@ -218,9 +243,7 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
         result.survey = file_info(settings.survey_path)
         result.survey_result = survey_check.check_survey(ifc_file, survey_rows, level_of)
         result.warnings.extend(result.survey_result["warnings"])
-        if result.survey_result["checks"]:
-            result.survey_verdict = rate_verdict(result.survey_rate, settings)
-        else:
+        if not result.survey_result["checks"]:
             result.warnings.append("Relevé terrain : aucune vérification exploitable dans la fiche.")
         for key, guids in result.survey_result["anomalies"].items():
             add(key, "Terrain", guids)
@@ -229,7 +252,6 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
 
     if lots and settings.check_federation:
         result.federation = federation.check_federation(ifc_file, lots, level_of)
-        result.federation_verdict = severity_verdict(result.federation)
         for key, item in result.federation["anomalies"].items():
             add(key, "Cohérence", item["guids"], item["severity"], item["count"])
         if result.federation["errors"]:
@@ -238,10 +260,10 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
 
     if settings.clash_rules:
         result.clashes = clash_check.run_clashes(ifc_file, lots, settings.clash_rules, level_of)
-        result.clash_verdict = severity_verdict(result.clashes)
         for key, item in result.clashes["anomalies"].items():
             add(key, "Conflit", item["guids"], item["severity"], item["count"],
-                related_guids=sorted(item["related_guids"]), point=item["point"])
+                related_guids=sorted(item["related_guids"]), point=item["point"], lot=item["lot"],
+                conflicts=item["conflicts"], pairs=item["pairs"])
         for rule in result.clashes["rules"]:
             if rule["status"] == "erreur":
                 result.warnings.append(f"Conflits : règle « {rule['label']} » non exécutée ({rule['message']}).")
@@ -253,27 +275,6 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
             result.warnings.append("Cohérence entre lots non contrôlée : les conflits entre lots supposent que les "
                                    "maquettes partagent le même repère.")
 
-    result.anomalies = sorted(anomalies, key=lambda a: (
-        _ANOMALY_RANK[a["severity"]], -a["count"], a["level"], a["ifc_class"], a["requirement"]))
-
-    # Rouge : au moins une anomalie. Vert : contrôlé par l'IDS, les règles
-    # Excel ou le relevé terrain, sans aucune anomalie.
-    for anomaly in result.anomalies:
-        result.invalid_guids.update(anomaly["guids"])
-    checked = set()
-    if result.pset:
-        result.invalid_guids.update(result.pset["invalid_guids"])
-        checked.update(result.pset["valid_guids"])
-    if result.ids_result:
-        checked.update(result.ids_result["applicable_guids"])
-    if result.survey_result:
-        checked.update(result.survey_result["conform_guids"])
-    result.valid_guids = checked - result.invalid_guids
-
-    verdicts = [v for v in (result.structure_verdict, result.pset_verdict, result.ids_verdict,
-                            result.survey_verdict, result.federation_verdict, result.clash_verdict) if v]
-    result.verdict = max(verdicts, key=_SEVERITY.get) if verdicts else INCONCLUSIVE
-
     if unsaved_changes:
         result.warnings.append("Le modèle contient des modifications non enregistrées : l'empreinte du fichier "
                                "ne décrit pas exactement le modèle contrôlé.")
@@ -284,11 +285,136 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
             except Exception:
                 return False
 
-        result.evolution = journal.compare(previous, result, element_exists)
+        result.element_exists = element_exists
+    result.raw_anomalies = anomalies
+    result.base_warnings = list(result.warnings)
+    finalize(result)
+    result.duration_s = time.time() - start
+    return result
+
+
+def _guid_failures(anomalies, source) -> dict:
+    """{GlobalId: {exigences stables}} des anomalies d'une source."""
+    failures = defaultdict(set)
+    for anomaly in anomalies:
+        if anomaly["source"] == source:
+            stable = clash_check.stable_requirement(source, anomaly["requirement"])
+            for guid in anomaly["guids"]:
+                failures[guid].add(stable)
+    return failures
+
+
+def _fully_admitted(raw, admitted, source) -> set:
+    """Éléments dont toutes les anomalies de la source sont admises : ils
+    comptent comme conformes dans le taux de cette source."""
+    failing, granted = _guid_failures(raw, source), _guid_failures(admitted, source)
+    return {guid for guid, requirements in failing.items() if requirements <= granted.get(guid, set())}
+
+
+def finalize(result: RecetteResult) -> RecetteResult:
+    """Applique les dérogations aux anomalies brutes, puis calcule verdicts,
+    coloration et évolution. Idempotent : rappelé quand une dérogation est
+    accordée ou retirée, sans relancer les contrôles."""
+    settings = result.settings
+    raw = result.raw_anomalies
+    if result.derogation_doc is not None:
+        anomalies, admitted, unused = derogation_file.apply(raw, result.derogation_doc, settings.lot)
+        info = dict(result.derogations or {})
+        info.update({"entries": len(derogation_file._applicable(result.derogation_doc, settings.lot)),
+                     "unused": unused})
+        result.derogations = info
+    else:
+        anomalies, admitted = list(raw), []
+    result.admitted = sorted(admitted, key=lambda a: (a["source"], a["level"], a["ifc_class"], a["requirement"]))
+    granted = {a["source"] for a in admitted}
+
+    def by_severity(source, outcome):
+        """Verdict d'un contrôle à gravités ; recalculé sur les anomalies
+        restantes quand une partie de ses anomalies est admise."""
+        if outcome is None:
+            return None
+        if source not in granted:
+            return severity_verdict(outcome)
+        left = [a for a in anomalies if a["source"] == source]
+        return severity_verdict({"blocking": any(a["severity"] == structure_check.BLOCKING for a in left),
+                                 "major": any(a["severity"] == structure_check.MAJOR for a in left),
+                                 "errors": outcome.get("errors")})
+
+    result.structure_verdict = by_severity("Structure", result.structure)
+    result.federation_verdict = by_severity("Cohérence", result.federation)
+    result.clash_verdict = by_severity("Conflit", result.clashes)
+
+    result.adjusted_rates = {}
+    result.ids_verdict = None
+    if result.ids_result:
+        ids_outcome = result.ids_result
+        if "IDS" in granted:
+            failures = sum(len(a["guids"]) for a in admitted if a["source"] == "IDS")
+            whole = sum(1 for a in admitted if a["source"] == "IDS" and not a["guids"])
+            ids_outcome = dict(ids_outcome)
+            ids_outcome["failed_total"] = max(ids_outcome["failed_total"] - failures, 0)
+            ids_outcome["cardinality_failures"] = max(ids_outcome["cardinality_failures"] - whole, 0)
+            total = ids_outcome["applicable_total"]
+            if total:
+                ids_outcome["pass_rate"] = (total - ids_outcome["failed_total"]) / total
+            else:
+                ids_outcome["specs_failed"] = max(ids_outcome["specs_failed"] - whole, 0)
+            result.adjusted_rates["ids"] = ids_outcome["pass_rate"]
+        result.ids_verdict = ids_verdict(ids_outcome, settings)
+
+    pset_admitted = _fully_admitted(raw, admitted, "PSet") if "PSet" in granted else set()
+    result.pset_verdict = None
+    if result.pset and result.pset["checked"]:
+        if pset_admitted:
+            result.adjusted_rates["pset"] = (result.pset["valid"] + len(pset_admitted)) / result.pset["checked"]
+        result.pset_verdict = rate_verdict(result.pset_rate, settings)
+
+    result.survey_verdict = None
+    if result.survey_result and result.survey_result["checks"]:
+        if "Terrain" in granted:
+            conform = result.survey_result["conform"] + len(_fully_admitted(raw, admitted, "Terrain")) + sum(
+                a["count"] for a in admitted if a["source"] == "Terrain" and not a["guids"])
+            result.adjusted_rates["survey"] = min(conform / result.survey_result["checks"], 1.0)
+        result.survey_verdict = rate_verdict(result.survey_rate, settings)
+
+    result.anomalies = sorted(anomalies, key=lambda a: (
+        _ANOMALY_RANK[a["severity"]], -a["count"], a["level"], a["ifc_class"], a["requirement"]))
+
+    # Rouge : au moins une anomalie. Vert : contrôlé par l'IDS, les règles
+    # Excel ou le relevé terrain, sans aucune anomalie. Un élément dont les
+    # anomalies sont toutes admises n'est ni rouge ni vert.
+    invalid, checked = set(), set()
+    for anomaly in result.anomalies:
+        invalid.update(anomaly["guids"])
+    if result.pset:
+        invalid.update(set(result.pset["invalid_guids"]) - pset_admitted)
+        checked.update(result.pset["valid_guids"])
+    if result.ids_result:
+        checked.update(result.ids_result["applicable_guids"])
+    if result.survey_result:
+        checked.update(result.survey_result["conform_guids"])
+    admitted_guids = {g for a in admitted for g in a["guids"]}
+    result.invalid_guids = invalid
+    result.valid_guids = checked - invalid - admitted_guids
+
+    verdicts = [v for v in (result.structure_verdict, result.pset_verdict, result.ids_verdict,
+                            result.survey_verdict, result.federation_verdict, result.clash_verdict) if v]
+    result.verdict = max(verdicts, key=_SEVERITY.get) if verdicts else INCONCLUSIVE
+
+    result.warnings = list(result.base_warnings)
+    if admitted:
+        result.warnings.append(f"{len(admitted)} anomalie(s) admise(s) par dérogation ({result.admitted_elements} "
+                               f"élément(s) ou constat(s)) : elles ne comptent pas dans le verdict (voir l'onglet "
+                               f"« Dérogations »).")
+    if result.derogations and result.derogations.get("unused"):
+        result.warnings.append(f"{len(result.derogations['unused'])} dérogation(s) sans objet : l'anomalie a été "
+                               f"levée, l'élément supprimé ou le contrôle non relancé.")
+    result.evolution = None
+    if result.previous_record is not None:
+        exists = result.element_exists or (lambda guid: True)
+        result.evolution = journal.compare(result.previous_record, result, exists)
         result.evolution["journal"] = file_info(settings.previous_path)
         result.warnings.extend(result.evolution["warnings"])
-
-    result.duration_s = time.time() - start
     return result
 
 

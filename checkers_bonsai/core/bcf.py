@@ -28,6 +28,7 @@ from typing import Iterable, Optional
 from xml.etree import ElementTree as ET
 
 from .excel_safety import clean_text
+from .clashes import stable_requirement
 
 BCF_VERSION = "2.1"
 # Couleur des éléments non conformes dans les points de vue (RGB hexadécimal,
@@ -50,8 +51,9 @@ def stable_guid(*parts: str) -> str:
 
 
 def topic_guid(project_key: str, lot: str, anomaly: dict) -> str:
-    return stable_guid(project_key, lot, anomaly.get("source") or "", anomaly["level"], anomaly["ifc_class"],
-                       anomaly["requirement"])
+    source = anomaly.get("source") or ""
+    return stable_guid(project_key, lot, source, anomaly["level"], anomaly["ifc_class"],
+                       stable_requirement(source, anomaly["requirement"]))
 
 
 def _xml(root: ET.Element) -> bytes:
@@ -198,13 +200,15 @@ def _viewpoint_file(viewpoint_guid: str, guids: list, color: bool, related: list
 def write_bcf(path: str, anomalies: Iterable[dict], author: str = "Checkers",
               project_name: Optional[str] = None, project_key: str = "", lot: str = "", referentials: str = "",
               marking: str = "", phase: str = "", resolved: Iterable[dict] = (),
-              creation_date: Optional[datetime] = None) -> dict:
+              creation_date: Optional[datetime] = None, admitted: Iterable[dict] = ()) -> dict:
     """Écrit un fichier BCF 2.1 avec un sujet ouvert par anomalie.
 
     `anomalies` : dicts level, ifc_class, requirement, source, severity,
     count, guids (voir recette.run_recette). `resolved` : groupes d'anomalies
     levées depuis la recette précédente (journal.compare) ; ceux qui n'ont
-    plus aucun élément en anomalie sont écrits comme sujets clos.
+    plus aucun élément en anomalie sont écrits comme sujets clos, comme les
+    anomalies admises par dérogation (`admitted`, avec le motif en
+    commentaire).
     `project_key` (GlobalId du projet IFC de préférence) entre dans les
     identifiants stables des sujets. La mention de confidentialité éventuelle
     figure en tête de chaque description et en étiquette.
@@ -244,14 +248,26 @@ def write_bcf(path: str, anomalies: Iterable[dict], author: str = "Checkers",
                                                                    point=anomaly.get("point")))
             stats["topics"] += 1
             stats["components"] += len(guids) + len(related)
-        for group in resolved:
-            guid = topic_guid(project_key, lot, group)
-            if guid in open_guids:
-                continue  # il reste des éléments en anomalie : le sujet reste ouvert
-            index += 1
+        def closing_comment(group):
+            if group.get("derogation"):
+                d = group["derogation"]
+                by = f" par {d['author']}" if d.get("author") else ""
+                when = f" le {d['date'][8:10]}/{d['date'][5:7]}/{d['date'][:4]}" if len(d.get("date") or "") >= 10 \
+                    else ""
+                return f"Anomalie admise par dérogation (accordée{by}{when}) : {d.get('reason', '')}"
             comment = f"Anomalie levée, constatée à la recette du {moment:%d/%m/%Y}."
             if group.get("removed"):
                 comment += f" Dont {group['removed']} élément(s) supprimé(s) de la maquette."
+            return comment
+
+        closed_guids = set()
+        for group in list(admitted) + list(resolved):
+            guid = topic_guid(project_key, lot, group)
+            if guid in open_guids or guid in closed_guids:
+                continue  # il reste des éléments en anomalie : le sujet reste ouvert
+            closed_guids.add(guid)
+            index += 1
+            comment = closing_comment(group)
             viewpoint = stable_guid(guid, "viewpoint")
             zf.writestr(f"{guid}/markup.bcf", _markup_file(
                 guid, viewpoint, group, index, CLOSED, author, date, lot, phase, referentials, marking, labels,

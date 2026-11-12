@@ -32,6 +32,17 @@ class CHECKERS_UL_anomalies(bpy.types.UIList):
         requirement = f"{item.requirement} ({item.severity.lower()})" if item.severity else item.requirement
         row.label(text=requirement, icon=_icon(SOURCE_ICONS.get(item.source, "DOT")))
         row.operator("checkers.select_anomaly", text="", icon=_icon("RESTRICT_SELECT_OFF")).index = index
+        row.operator("checkers.admit_anomaly", text="", icon=_icon("CHECKBOX_HLT")).index = index
+
+
+class CHECKERS_UL_admitted(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.label(text=str(item.count))
+        row.label(text=f"{item.requirement} · {item.ifc_class} · {item.level}",
+                  icon=_icon(SOURCE_ICONS.get(item.source, "DOT")))
+        row.label(text=item.reason)
+        row.operator("checkers.revoke_derogation", text="", icon=_icon("X")).index = index
 
 
 class CHECKERS_UL_lots(bpy.types.UIList):
@@ -146,6 +157,7 @@ class CHECKERS_PT_recette(_SubPanel, bpy.types.Panel):
         col.prop(props, "marking")
         col.separator()
         col.prop(props, "previous_path")
+        col.prop(props, "derogations_path")
         col.separator()
         row = col.row(align=True)
         row.prop(props, "threshold_ok", text="Validé ≥")
@@ -179,6 +191,16 @@ class CHECKERS_PT_results(_ResultPanel, bpy.types.Panel):
             box.label(text=warning, icon=_icon("ERROR"))
         if props.anomalies:
             layout.template_list("CHECKERS_UL_anomalies", "", props, "anomalies", props, "anomaly_index", rows=6)
+        if props.conflict_position:
+            row = layout.row(align=True)
+            row.operator("checkers.step_conflict", text="", icon=_icon("TRIA_LEFT")).direction = -1
+            row.label(text=props.conflict_position, icon=_icon("MOD_BOOLEAN"))
+            row.operator("checkers.step_conflict", text="", icon=_icon("TRIA_RIGHT")).direction = 1
+            row.operator("checkers.clear_conflict_view", icon=_icon("TRASH"))
+        if props.admitted:
+            layout.label(text=f"Admises par dérogation ({len(props.admitted)}) : hors verdict",
+                         icon=_icon("CHECKBOX_HLT"))
+            layout.template_list("CHECKERS_UL_admitted", "", props, "admitted", props, "admitted_index", rows=3)
         row = layout.row(align=True)
         row.operator("checkers.color_results", icon=_icon("COLOR"))
         row.operator("checkers.reset_colors", icon=_icon("LOOP_BACK"))
@@ -236,6 +258,7 @@ class CHECKERS_PT_diagnostic(_Panel, bpy.types.Panel):
 
 classes = (
     CHECKERS_UL_anomalies,
+    CHECKERS_UL_admitted,
     CHECKERS_UL_lots,
     CHECKERS_UL_clash_rules,
     CHECKERS_PT_main,

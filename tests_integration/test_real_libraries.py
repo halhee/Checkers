@@ -342,6 +342,33 @@ class CoordinationTest(unittest.TestCase):
         point = next(a["point"] for a in result["anomalies"].values() if a["related_guids"])
         self.assertTrue(1.9 <= point[0] <= 2.4 and 2.4 <= point[2] <= 3.1, point)
 
+    def test_other_lot_geometry_for_the_3d_view(self):
+        """Géométrie d'un élément d'un autre lot, telle que la vue 3D
+        l'affiche : en mètres, placement compris."""
+        from checkers_bonsai.core import scene
+        structure = ifcopenshell.open(self.str_path)
+        vertices, triangles = scene.element_mesh(structure.by_guid(self.beam.GlobalId))
+        self.assertGreaterEqual(len(triangles), 12)
+        for axis, (low, high) in enumerate(((2.0, 2.3), (-1.0, 3.0), (2.5, 3.0))):
+            values = [v[axis] for v in vertices]
+            self.assertAlmostEqual(min(values), low, places=4)
+            self.assertAlmostEqual(max(values), high, places=4)
+
+    def test_derogation_for_a_clash(self):
+        from checkers_bonsai.core import derogations
+        settings = self.recette.RecetteSettings(
+            check_structure=False, lot="CVC", lots=[("STR", self.str_path)],
+            clash_rules=[self.clashes.ClashRule(other="STR", selector_a="IfcDuctSegment", selector_b="IfcBeam")])
+        first = self.recette.run_recette(self.cvc, settings)
+        conflict = next(a for a in first.anomalies if a["source"] == "Conflit")
+        path = os.path.join(self.dir, "CVC.derogations.json")
+        document = derogations.new_document()
+        derogations.add(document, derogations.make_entry(conflict, "Réservation prévue", lot="CVC"))
+        derogations.save(document, path)
+        settings.derogations_path = path
+        second = self.recette.run_recette(self.cvc, settings)
+        self.assertEqual((second.clash_verdict, len(second.admitted)), (self.recette.VALIDATED, 1))
+
     def test_recette(self):
         settings = self.recette.RecetteSettings(
             check_structure=False, lot="CVC", lots=[("STR", self.str_path)],

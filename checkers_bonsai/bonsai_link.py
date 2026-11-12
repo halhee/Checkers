@@ -64,3 +64,40 @@ def objects_for_guids(guids):
         else:
             objects.append(obj)
     return objects, missing
+
+
+def guid_of(obj):
+    """GlobalId de l'élément IFC représenté par un objet Blender, ou None."""
+    tool = bonsai_tool()
+    try:
+        entity = tool.Ifc.get_entity(obj) if tool else None
+        return getattr(entity, "GlobalId", None) if entity is not None else None
+    except Exception:
+        return None
+
+
+def _float(value, default: float) -> float:
+    try:
+        return float(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def scene_offset():
+    """Décalage de la scène appliqué par Bonsai aux grandes coordonnées
+    (« false origin ») : ((x, y, z) en mètres, abscisse, ordonnée de l'axe
+    X), ou None s'il n'y en a pas. Voir core/scene.py."""
+    tool, ifc_file = bonsai_tool(), current_ifc()
+    if tool is None or ifc_file is None:
+        return None
+    try:
+        props = tool.Georeference.get_georeference_props()
+        if not getattr(props, "has_blender_offset", False):
+            return None
+        import ifcopenshell.util.unit
+        scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
+        position = tuple(_float(getattr(props, f"blender_offset_{axis}", 0.0), 0.0) * scale for axis in "xyz")
+        return (position, _float(getattr(props, "blender_x_axis_abscissa", 1.0), 1.0),
+                _float(getattr(props, "blender_x_axis_ordinate", 0.0), 0.0))
+    except Exception:
+        return None

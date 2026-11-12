@@ -16,20 +16,27 @@ def _classes():
 
 def register():
     import bpy
-    from .operators import on_load_post
+    from .operators import on_load_post, on_save_pre
     from .props import CheckersProperties
     for cls in _classes():
         bpy.utils.register_class(cls)
     bpy.types.Scene.checkers = bpy.props.PointerProperty(type=CheckersProperties)
     if on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_load_post)
+    if on_save_pre not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(on_save_pre)
 
 
 def unregister():
     import bpy
-    from .operators import on_load_post
+    from . import viewer
+    from .operators import on_load_post, on_save_pre
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
+    if on_save_pre in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(on_save_pre)
+    viewer.clear()
+    viewer.forget_lots()
     del bpy.types.Scene.checkers
     for cls in reversed(_classes()):
         bpy.utils.unregister_class(cls)

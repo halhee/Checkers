@@ -99,6 +99,8 @@ class CheckersAnomaly(bpy.types.PropertyGroup):
     source: bpy.props.StringProperty(name="Source")
     severity: bpy.props.StringProperty(name="Gravité")
     count: bpy.props.IntProperty(name="Éléments")
+    reason: bpy.props.StringProperty(name="Motif")             # anomalies admises seulement
+    derogation_id: bpy.props.StringProperty(name="Dérogation")  # idem
 
 
 class CheckersProperties(bpy.types.PropertyGroup):
@@ -135,6 +137,10 @@ class CheckersProperties(bpy.types.PropertyGroup):
         name="Recette précédente", subtype="FILE_PATH",
         description="Journal (.json) enregistré avec la fiche de la recette précédente : permet de suivre les "
                     "anomalies levées, persistantes et nouvelles")
+    derogations_path: bpy.props.StringProperty(
+        name="Dérogations", subtype="FILE_PATH",
+        description="Fichier des dérogations (.json) : anomalies admises, avec leur motif, qui ne comptent plus "
+                    "dans le verdict. Créé au premier « Admettre » s'il n'est pas choisi, à côté de la maquette")
 
     # Informations de recette
     lot: bpy.props.StringProperty(name="Lot", description="Lot ou corps d'état contrôlé (ex. Lot 02 – Gros œuvre)")
@@ -165,6 +171,9 @@ class CheckersProperties(bpy.types.PropertyGroup):
     invalid_count: bpy.props.IntProperty()
     anomalies: bpy.props.CollectionProperty(type=CheckersAnomaly)
     anomaly_index: bpy.props.IntProperty()
+    admitted: bpy.props.CollectionProperty(type=CheckersAnomaly)
+    admitted_index: bpy.props.IntProperty()
+    conflict_position: bpy.props.StringProperty()   # « Conflit 2 / 14 » pendant la navigation
 
     def marking_text(self) -> str:
         return self.marking.strip().upper()

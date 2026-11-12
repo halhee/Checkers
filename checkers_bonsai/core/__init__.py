@@ -6,6 +6,8 @@
 - rules.py / psets.py : règles Excel et contrôle des PSet ;
 - federation.py : cohérence de référence avec les maquettes des autres lots ;
 - clashes.py : conflits géométriques avec IfcClash, selon des règles ;
+- derogations.py : fichier des dérogations (anomalies admises, avec leur motif) ;
+- scene.py : coordonnées IFC vers la scène Blender, géométrie d'un élément ;
 - survey.py : fiche de relevé terrain et comparaison avec la maquette ;
 - journal.py : journal JSON d'une recette et comparaison entre livraisons ;
 - tracking.py : tableau de suivi consolidé à partir des journaux ;

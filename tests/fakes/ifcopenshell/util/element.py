@@ -5,6 +5,13 @@ def get_psets(element, psets_only=False, qtos_only=False, should_inherit=True, v
     return getattr(element, "_psets", {}) or {}
 
 
+def get_pset(element, name, prop=None, psets_only=False, qtos_only=False, should_inherit=True, verbose=False):
+    pset = get_psets(element).get(name)
+    if pset is None:
+        return None
+    return pset.get(prop) if prop else dict(pset)
+
+
 def get_aggregate(element):
     relations = getattr(element, "Decomposes", None) or ()
     return relations[0].RelatingObject if relations else None

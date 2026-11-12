@@ -4,7 +4,7 @@ Extension Blender pour [Bonsai](https://bonsaibim.org/) qui fait la recette de l
 
 - **contrôles** : structure du modèle, exigences **IDS** (buildingSMART), **PSet requis** (fichier Excel), **relevé terrain** ;
 - **coordination entre lots** : cohérence de référence avec les maquettes des autres lots (origine, étages, géoréférencement…) et **conflits géométriques** avec IfcClash, selon des règles réglables ;
-- **verdict** (validé, avec réserves, rejeté) selon des seuils réglables ;
+- **verdict** (validé, avec réserves, rejeté) selon des seuils réglables, et **dérogations** motivées pour les anomalies admises ;
 - anomalies **sélectionnables dans la vue 3D**, coloration conforme / non conforme ;
 - **suivi entre livraisons** : anomalies levées, persistantes et nouvelles depuis la recette précédente ;
 - **fiche de recette Excel** à signer, avec traçabilité (empreintes SHA-256) ;
@@ -37,11 +37,13 @@ Dans la vue 3D, ouvrir la barre latérale (`N`) et l'onglet **Checkers**. Les se
 2. **Recette**
    - Renseigner le lot, la phase (suggestions ESQ à DOE, exploitation), la personne qui recette et une mention de confidentialité facultative.
    - **Recette précédente** : le journal `.json` de la livraison précédente, pour suivre l'évolution.
+   - **Dérogations** : facultatif, le fichier des anomalies admises (voir plus bas). Créé au premier « Admettre » s'il n'est pas choisi.
    - Ajuster si besoin les seuils de verdict : 98 % et 90 % par défaut.
    - Cliquer sur **Lancer la recette**.
 3. **Résultats**
    - Verdict, résultat de chaque contrôle, évolution et avertissements.
-   - Liste des anomalies : le bouton de chaque ligne sélectionne et cadre les éléments concernés.
+   - Liste des anomalies : le premier bouton de chaque ligne sélectionne et cadre les éléments concernés, le second admet l'anomalie par dérogation.
+   - Pour un conflit : la vue se centre sur le point de conflit et l'élément de l'autre lot s'affiche en filaire ; les flèches passent d'un conflit à l'autre.
    - **Colorer** : rouge = au moins une anomalie, vert = contrôlé sans anomalie. **Réinitialiser** restaure l'affichage d'origine.
 4. **Livrables de recette**
    - **Fiche de recette (Excel) + journal** : la fiche à imprimer et signer, les onglets de détail, et le journal `.json` de même nom, à conserver pour la livraison suivante.
@@ -123,7 +125,7 @@ Dans la section **Coordination entre lots**, ajouter avec **+** les maquettes IF
 | C04 | Même point d'origine et même orientation du bâtiment (1 cm, 0,01°) | Majeur |
 | C05 | Étages de même nom à la même altitude (1 cm) | Majeur, par étage |
 | C06 | Étages de même nom des deux côtés | Mineur, par étage |
-| C07 | Même géoréférencement (`IfcMapConversion`) | Majeur |
+| C07 | Même géoréférencement (`IfcMapConversion`, ou en IFC2X3 les jeux de propriétés `ePSet_MapConversion` et `ePSet_ProjectedCRS` du projet) | Majeur |
 | C08 | Même nord géographique | Majeur |
 | C09 | Aucun élément de même GlobalId dans les deux lots | Bloquant, par élément |
 
@@ -140,9 +142,29 @@ Chaque conflit devient une anomalie de source « Conflit », regroupée par éta
 
 Gravité : un conflit bloquant rejette la maquette, un conflit majeur ou une règle qui n'a pas pu s'exécuter (sélection vide, géométrie non calculable) donne des réserves, un conflit mineur est seulement signalé.
 
+**Voir un conflit dans la vue 3D** : le bouton de sélection d'une anomalie « Conflit » sélectionne les éléments de la maquette ouverte, place le curseur 3D et un repère sur le point de conflit, centre la vue dessus et affiche en filaire, par-dessus la maquette, les éléments de l'autre lot (calculés à partir de son fichier IFC). Les flèches **◀ ▶** passent d'un conflit à l'autre, un par un. Ces objets d'affichage sont temporaires : **Effacer** les retire, et ils ne sont jamais enregistrés dans le fichier `.blend`. Si Bonsai a décalé la scène (maquettes aux grandes coordonnées), le point et les éléments suivent ce décalage.
+
+Le suivi d'un conflit d'une recette à l'autre (journal, sujets BCF, dérogations) ne dépend pas de la distance de la règle : ajuster une tolérance ne fait pas passer les conflits pour nouveaux. Changer de mode, si.
+
+### Dérogations
+
+Certaines anomalies sont voulues ou acceptées : une gaine dans sa réservation, un écart validé par la maîtrise d'ouvrage, un ouvrage existant conservé. Plutôt que de les retrouver à chaque recette, on les **admet** :
+
+1. Dans la liste des anomalies, bouton **Admettre** de la ligne.
+2. Saisir le **motif** (obligatoire), choisir la portée : tous les éléments de l'anomalie, ou seulement ceux sélectionnés dans la vue 3D ; cocher *Valable pour tous les lots* si besoin.
+3. Le verdict, les taux et la coloration sont recalculés aussitôt, sans relancer les contrôles.
+
+Une dérogation porte sur des éléments précis (GlobalId) pour une exigence donnée : un nouvel élément présentant le même défaut reste une anomalie. Elle est enregistrée dans le **fichier des dérogations** (`.json`, par défaut `<maquette>.derogations.json` à côté de la maquette), avec le motif, la personne qui recette et la date, et vaut pour les recettes suivantes. **Retirer** (liste « Admises par dérogation ») rouvre l'anomalie.
+
+Effets :
+- les anomalies admises sortent du verdict : un élément dont toutes les anomalies d'un contrôle sont admises compte comme conforme dans le taux de ce contrôle ; pour la structure, la cohérence et les conflits, le verdict est recalculé sans elles ;
+- la fiche les liste dans l'onglet **Dérogations**, avec le motif, ainsi que les dérogations **sans objet** (défaut corrigé, élément supprimé) qui peuvent être retirées du fichier ; l'empreinte du fichier figure dans la traçabilité ;
+- le BCF les transmet comme **sujets clos**, avec le motif en commentaire ;
+- le journal les garde à part : elles ne sont comptées ni comme levées ni comme nouvelles ; le tableau de suivi a une colonne « Anomalies admises ».
+
 ### Verdict
 
-L'IDS, les règles Excel et le relevé terrain donnent chacun *validé* au-dessus du premier seuil, *validé avec réserves* au-dessus du second, *rejeté* en dessous. Une spécification IDS obligatoire sans aucun élément concerné entraîne le rejet. La cohérence entre lots et les conflits suivent leurs gravités (comme la structure). Le verdict global est le plus sévère des contrôles réalisés.
+L'IDS, les règles Excel et le relevé terrain donnent chacun *validé* au-dessus du premier seuil, *validé avec réserves* au-dessus du second, *rejeté* en dessous. Une spécification IDS obligatoire sans aucun élément concerné entraîne le rejet. La cohérence entre lots et les conflits suivent leurs gravités (comme la structure). Le verdict global est le plus sévère des contrôles réalisés. Les anomalies admises par dérogation n'y entrent pas.
 
 Les anomalies sont regroupées par étage ou, en IFC 4.3, par partie d'ouvrage (`IfcFacilityPart`). Un élément placé dans un local est rattaché à l'étage du local.
 
@@ -155,7 +177,8 @@ Chaque fiche de recette est enregistrée avec un journal `.json`. À la livraiso
 - les anomalies **levées**, en distinguant celles qui disparaissent parce que l'élément a été supprimé ;
 - les anomalies **persistantes** ;
 - les anomalies **nouvelles** ;
-- les anomalies **non recontrôlées**, quand un contrôle de la recette précédente n'a pas été relancé : elles ne sont pas comptées comme levées.
+- les anomalies **non recontrôlées**, quand un contrôle de la recette précédente n'a pas été relancé : elles ne sont pas comptées comme levées ;
+- les anomalies **admises** depuis, par dérogation.
 
 La fiche reçoit une section et un onglet « Évolution », et l'empreinte du journal précédent figure dans la traçabilité. Un avertissement signale un référentiel, un lot ou un projet différent de la recette précédente, car la comparaison n'aurait alors pas le même sens.
 
@@ -196,6 +219,8 @@ Pour un export normalisé COBie, Bonsai propose le module *Facility Management* 
 - Seuls les points de vue BCF des conflits ont une caméra ; ailleurs l'outil de destination cadre la sélection. L'extension écrit des BCF, elle ne relit pas les réponses.
 - Le contrôle anti-ReDoS des motifs regex d'un IDS est une heuristique : n'ouvrir que des IDS de provenance connue.
 - La recette s'exécute dans le fil principal de Blender, dont l'interface reste figée pendant le calcul.
+- Dérogations : le fichier est un simple JSON ; le motif et l'auteur sont déclaratifs. Une dérogation sur un constat bloquant est possible : la fiche la rend visible, c'est au visa de la recette d'en juger.
+- Vue 3D d'un conflit : au plus 20 éléments de l'autre lot affichés à la fois, et au plus 500 conflits parcourables par anomalie.
 - Coordination : la recette porte sur la maquette ouverte, comparée aux autres lots ; les conflits entre deux lots tiers ne sont pas cherchés. Checkers signale les écarts, il ne recale pas les maquettes.
 - Conflits : le calcul géométrique peut prendre plusieurs minutes sur de grosses maquettes, l'interface restant figée ; restreindre les sélections. Les résultats bruts d'IfcClash comportent des conflits admis (gaine dans sa réservation, élément posé sur un autre…) : régler mode, tolérance et sélections plutôt que tout tester contre tout. Au-delà de 50 000 conflits, le détail est tronqué.
 - Mode *intersection* : lors des essais, une gaine traversant une poutre de part en part, affleurant sa face supérieure, n'a pas été détectée. En cas de doute, ajouter une règle en mode *collision* sur les mêmes sélections.
@@ -220,6 +245,7 @@ checkers_bonsai/
 ├── blender_manifest.toml   # manifeste de l'extension (sans permission réseau)
 ├── __init__.py             # enregistrement
 ├── bonsai_link.py          # accès au modèle et aux objets Bonsai
+├── viewer.py               # affichage d'un conflit dans la vue 3D
 ├── props.py, operators.py, ui.py
 ├── examples/               # IDS et règles Excel d'exemple
 └── core/                   # moteur, indépendant de Blender
@@ -230,6 +256,8 @@ checkers_bonsai/
     ├── federation.py       # cohérence de référence entre lots
     ├── clashes.py          # conflits géométriques (IfcClash)
     ├── survey.py           # relevé terrain
+    ├── derogations.py      # fichier des dérogations
+    ├── scene.py            # coordonnées IFC vers la scène, géométrie d'un élément
     ├── journal.py          # journal de recette et comparaison entre livraisons
     ├── tracking.py         # tableau de suivi
     ├── inventory.py        # inventaire d'exploitation

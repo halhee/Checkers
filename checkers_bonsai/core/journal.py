@@ -13,6 +13,8 @@ import json
 import os
 from datetime import datetime
 
+from .clashes import stable_requirement
+
 FORMAT = "checkers-recette"
 VERSION = 1
 MAX_JOURNAL_BYTES = 100 * 1024 * 1024
@@ -54,11 +56,21 @@ def to_record(result) -> dict:
             "rules": {k: result.rules.get(k, "") for k in ("name", "sha256", "corps_etat")} if result.rules else None,
             "survey": {k: result.survey.get(k, "") for k in ("name", "sha256")} if result.survey else None,
             "lots": [{"lot": lot["name"], "name": lot["file_name"], "sha256": lot["sha256"]} for lot in result.lots],
+            "derogations": ({k: result.derogations.get(k, "") for k in ("name", "sha256")}
+                            if result.derogations else None),
         },
         "anomalies": [
             {"level": a["level"], "ifc_class": a["ifc_class"], "requirement": a["requirement"],
              "source": a["source"], "severity": a.get("severity") or "", "count": a["count"], "guids": a["guids"]}
             for a in result.anomalies
+        ],
+        # Anomalies admises par dérogation : suivies à part, ni levées ni
+        # persistantes.
+        "admitted": [
+            {"level": a["level"], "ifc_class": a["ifc_class"], "requirement": a["requirement"],
+             "source": a["source"], "severity": a.get("severity") or "", "count": a["count"], "guids": a["guids"],
+             "derogation": a["derogation"].get("id", ""), "reason": a["derogation"].get("reason", "")}
+            for a in getattr(result, "admitted", [])
         ],
     }
 
@@ -93,7 +105,8 @@ def load_record(path: str) -> dict:
     except ValueError:
         raise JournalError("Journal de recette invalide : date illisible")
     _require(isinstance(record.get("anomalies"), list), "liste d'anomalies absente")
-    for anomaly in record["anomalies"]:
+    _require(isinstance(record.get("admitted", []), list), "liste des anomalies admises mal formée")
+    for anomaly in record["anomalies"] + record.get("admitted", []):
         _require(isinstance(anomaly, dict), "anomalie mal formée")
         for key in ("level", "ifc_class", "requirement", "source"):
             _require(isinstance(anomaly.get(key), str), f"champ « {key} » absent d'une anomalie")
@@ -102,7 +115,7 @@ def load_record(path: str) -> dict:
     for key in ("model", "referentials"):
         _require(isinstance(record.get(key), dict), f"bloc « {key} » absent")
     _require(isinstance(record["model"].get("file") or {}, dict), "bloc « model.file » mal formé")
-    for key in ("ids", "rules", "survey"):
+    for key in ("ids", "rules", "survey", "derogations"):
         _require(isinstance(record["referentials"].get(key) or {}, dict), f"référentiel « {key} » mal formé")
     lots = record["referentials"].get("lots") or []
     _require(isinstance(lots, list) and all(isinstance(l, dict) for l in lots), "liste des lots associés mal formée")
@@ -114,21 +127,23 @@ def load_record(path: str) -> dict:
 
 
 def _pairs(anomalies) -> dict:
-    """{(source, exigence, GlobalId): (niveau, classe IFC)} : une anomalie
-    est suivie par élément, pas par groupe, pour qu'un élément déplacé d'un
-    étage à l'autre ne passe pas pour « corrigé puis réapparu »."""
+    """{(source, exigence stable, GlobalId): (niveau, classe IFC, exigence)} :
+    une anomalie est suivie par élément, pas par groupe, pour qu'un élément
+    déplacé d'un étage à l'autre ne passe pas pour « corrigé puis réapparu ».
+    L'exigence stable ignore la tolérance d'une règle de conflits."""
     pairs = {}
     for anomaly in anomalies:
+        stable = stable_requirement(anomaly["source"], anomaly["requirement"])
         for guid in anomaly["guids"] or [NO_ELEMENT]:
-            pairs[(anomaly["source"], anomaly["requirement"], guid)] = (anomaly["level"], anomaly["ifc_class"])
+            pairs[(anomaly["source"], stable, guid)] = (anomaly["level"], anomaly["ifc_class"], anomaly["requirement"])
     return pairs
 
 
 def _groups(pairs: dict, keys, removed=()) -> list:
     groups = {}
     for key in keys:
-        source, requirement, guid = key
-        level, ifc_class = pairs[key]
+        source, _, guid = key
+        level, ifc_class, requirement = pairs[key]
         group = groups.setdefault((level, ifc_class, requirement, source), {
             "level": level, "ifc_class": ifc_class, "requirement": requirement, "source": source,
             "guids": [], "count": 0, "removed": 0})
@@ -154,7 +169,13 @@ def compare(previous: dict, result, element_exists) -> dict:
     signale dans « warnings »."""
     before = _pairs(previous["anomalies"])
     after = _pairs(result.anomalies)
+    admitted_now = _pairs(getattr(result, "admitted", []))
+    # Une anomalie admise précédemment puis rouverte (dérogation retirée)
+    # n'est pas nouvelle : elle existait déjà.
+    known = set(before) | set(_pairs(previous.get("admitted", [])))
     gone = set(before) - set(after)
+    newly_admitted = gone & set(admitted_now)
+    gone -= newly_admitted
     not_rechecked = {key for key in gone if key[0] not in result.sources}
     resolved_keys = gone - not_rechecked
     removed = {key for key in resolved_keys if key[2] != NO_ELEMENT and not element_exists(key[2])}
@@ -198,11 +219,12 @@ def compare(previous: dict, result, element_exists) -> dict:
         "previous_verdict": previous.get("verdict", ""),
         "previous_file": (previous_model.get("file") or {}).get("name", ""),
         "resolved": _groups(before, resolved_keys, removed),
-        "new": _groups(after, set(after) - set(before)),
-        "persistent": _groups(after, set(after) & set(before)),
+        "new": _groups(after, set(after) - known),
+        "persistent": _groups(after, set(after) & known),
         "not_rechecked": _groups(before, not_rechecked),
+        "admitted": _groups(admitted_now, newly_admitted),
         "resolved_count": len(resolved_keys), "removed_count": len(removed),
-        "not_rechecked_count": len(not_rechecked),
-        "new_count": len(set(after) - set(before)), "persistent_count": len(set(after) & set(before)),
+        "not_rechecked_count": len(not_rechecked), "admitted_count": len(newly_admitted),
+        "new_count": len(set(after) - known), "persistent_count": len(set(after) & known),
         "warnings": warnings,
     }
