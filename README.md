@@ -198,7 +198,7 @@ Pour un export normalisé COBie, Bonsai propose le module *Facility Management* 
 - La recette s'exécute dans le fil principal de Blender, dont l'interface reste figée pendant le calcul.
 - Coordination : la recette porte sur la maquette ouverte, comparée aux autres lots ; les conflits entre deux lots tiers ne sont pas cherchés. Checkers signale les écarts, il ne recale pas les maquettes.
 - Conflits : le calcul géométrique peut prendre plusieurs minutes sur de grosses maquettes, l'interface restant figée ; restreindre les sélections. Les résultats bruts d'IfcClash comportent des conflits admis (gaine dans sa réservation, élément posé sur un autre…) : régler mode, tolérance et sélections plutôt que tout tester contre tout. Au-delà de 50 000 conflits, le détail est tronqué.
-- Mode *intersection* : lors des essais, une gaine traversant une poutre de part en part, affleurant sa face supérieure, n'a pas été détectée. Le mode *collision* la trouve ; pour une première passe sur des réseaux, le préférer, puis affiner.
+- Mode *intersection* : lors des essais, une gaine traversant une poutre de part en part, affleurant sa face supérieure, n'a pas été détectée. En cas de doute, ajouter une règle en mode *collision* sur les mêmes sélections.
 - L'inventaire ne retient que la distribution technique et les appareils de transport : un équipement modélisé en objet générique n'y figure pas.
 
 ## Développement
