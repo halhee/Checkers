@@ -39,7 +39,8 @@ def to_record(result) -> dict:
         "lot": s.lot, "phase": s.phase, "tester": s.tester, "marking": s.marking,
         "verdict": result.verdict,
         "verdicts": {"ids": result.ids_verdict, "pset": result.pset_verdict, "structure": result.structure_verdict,
-                     "survey": result.survey_verdict},
+                     "survey": result.survey_verdict, "federation": result.federation_verdict,
+                     "clashes": result.clash_verdict},
         "rates": {"ids": result.ids_rate, "pset": result.pset_rate, "survey": result.survey_rate},
         "sources": sorted(result.sources),
         "thresholds": {"ok": s.threshold_ok, "reserve": s.threshold_reserve},
@@ -52,6 +53,7 @@ def to_record(result) -> dict:
             "ids": {k: result.ids.get(k, "") for k in ("name", "sha256", "title")} if result.ids else None,
             "rules": {k: result.rules.get(k, "") for k in ("name", "sha256", "corps_etat")} if result.rules else None,
             "survey": {k: result.survey.get(k, "") for k in ("name", "sha256")} if result.survey else None,
+            "lots": [{"lot": lot["name"], "name": lot["file_name"], "sha256": lot["sha256"]} for lot in result.lots],
         },
         "anomalies": [
             {"level": a["level"], "ifc_class": a["ifc_class"], "requirement": a["requirement"],
@@ -102,6 +104,8 @@ def load_record(path: str) -> dict:
     _require(isinstance(record["model"].get("file") or {}, dict), "bloc « model.file » mal formé")
     for key in ("ids", "rules", "survey"):
         _require(isinstance(record["referentials"].get(key) or {}, dict), f"référentiel « {key} » mal formé")
+    lots = record["referentials"].get("lots") or []
+    _require(isinstance(lots, list) and all(isinstance(l, dict) for l in lots), "liste des lots associés mal formée")
     for key in ("lot", "phase", "verdict"):
         _require(isinstance(record.get(key, ""), str), f"champ « {key} » mal formé")
     sources = record.get("sources", [])
@@ -176,6 +180,13 @@ def compare(previous: dict, result, element_exists) -> dict:
         if old_hash and new_hash and old_hash != new_hash:
             warnings.append(f"{label} a changé depuis la recette précédente : des anomalies « levées » ou "
                             f"« nouvelles » peuvent venir du référentiel et non de la maquette.")
+    previous_lots = {lot.get("lot"): lot.get("sha256", "") for lot in previous_refs.get("lots") or []
+                     if isinstance(lot, dict)}
+    for lot in result.lots:
+        old_hash = previous_lots.get(lot["name"], "")
+        if old_hash and lot.get("sha256") and old_hash != lot["sha256"]:
+            warnings.append(f"La maquette du lot « {lot['name']} » a changé depuis la recette précédente : les "
+                            f"anomalies de coordination peuvent venir de ce lot et non de la maquette contrôlée.")
     if isinstance(previous.get("sources"), list):
         added = sorted(result.sources - set(previous["sources"]))
         if added:

@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Bibliothèques fournies par Bonsai
-        run: pip install ifcopenshell ifctester openpyxl
+        run: pip install ifcopenshell ifctester ifcclash openpyxl
       - name: Versions
         run: python -c "import ifcopenshell, openpyxl; print('ifcopenshell', ifcopenshell.version, '| openpyxl', openpyxl.__version__)"
       - name: Tests d'intégration

@@ -4,6 +4,8 @@
 - structure.py : contrôles de structure du modèle, sans référentiel ;
 - ids.py : contrôle IDS (ifctester) avec garde-fous sur le fichier reçu ;
 - rules.py / psets.py : règles Excel et contrôle des PSet ;
+- federation.py : cohérence de référence avec les maquettes des autres lots ;
+- clashes.py : conflits géométriques avec IfcClash, selon des règles ;
 - survey.py : fiche de relevé terrain et comparaison avec la maquette ;
 - journal.py : journal JSON d'une recette et comparaison entre livraisons ;
 - tracking.py : tableau de suivi consolidé à partir des journaux ;

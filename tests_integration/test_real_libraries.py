@@ -1,7 +1,7 @@
 """Tests d'intégration avec les vraies bibliothèques IfcOpenShell et
 ifctester (celles que Bonsai fournit), sans Blender.
 
-    pip install ifcopenshell ifctester openpyxl
+    pip install ifcopenshell ifctester ifcclash openpyxl
     python -m unittest discover tests_integration
 
 Les tests de tests/ utilisent des doublures : ils vérifient la logique de
@@ -234,6 +234,124 @@ class RealLibrariesTest(unittest.TestCase):
         self.assertEqual(result.pset["checked"], 3)                          # 2 murs + 1 porte
         self.assertIn(parts["wall_ok"].GlobalId, result.pset["valid_guids"])
         self.assertGreater(result.ids_result["specs_checked"], 0)
+
+
+try:
+    import ifcopenshell.api.context
+    import ifcopenshell.api.geometry
+    import numpy
+    from ifcclash import ifcclash  # noqa: F401
+    HAS_IFCCLASH = HAS_LIBRARIES
+except ImportError:
+    HAS_IFCCLASH = False
+
+
+def build_lot(storey_z=0.0, building_y=0.0, eastings=652000.0, project_guid=None):
+    """Maquette d'un lot avec une géométrie réelle : RDC, R+1 à 3 m,
+    contexte Body, géoréférencement Lambert 93."""
+    model = ifcopenshell.api.project.create_file("IFC4")
+    project = create(model, "IfcProject", "Projet de coordination")
+    if project_guid:
+        project.GlobalId = project_guid
+    ifcopenshell.api.unit.assign_unit(model)
+    model3d = ifcopenshell.api.context.add_context(model, context_type="Model")
+    body = ifcopenshell.api.context.add_context(model, context_type="Model", context_identifier="Body",
+                                                target_view="MODEL_VIEW", parent=model3d)
+    crs = model.createIfcProjectedCRS(Name="EPSG:2154")
+    model.createIfcMapConversion(SourceCRS=model3d, TargetCRS=crs, Eastings=eastings, Northings=6862000.0,
+                                 OrthogonalHeight=35.0, XAxisAbscissa=1.0, XAxisOrdinate=0.0, Scale=1.0)
+    site = create(model, "IfcSite", "Site")
+    building = create(model, "IfcBuilding", "Bâtiment A")
+    rdc = create(model, "IfcBuildingStorey", "RDC")
+    r1 = create(model, "IfcBuildingStorey", "R+1")
+    ifcopenshell.api.aggregate.assign_object(model, products=[site], relating_object=project)
+    ifcopenshell.api.aggregate.assign_object(model, products=[building], relating_object=site)
+    ifcopenshell.api.aggregate.assign_object(model, products=[rdc, r1], relating_object=building)
+    for product, (x, y, z) in ((site, (0, 0, 0)), (building, (0, building_y, 0)), (rdc, (0, building_y, 0)),
+                               (r1, (0, building_y, 3.0 + storey_z))):
+        place(model, product, x, y, z)
+    return model, body, rdc
+
+
+def place(model, product, x, y, z):
+    matrix = numpy.eye(4)
+    matrix[:3, 3] = (x, y, z)
+    ifcopenshell.api.geometry.edit_object_placement(model, product=product, matrix=matrix)
+
+
+def box(model, body, storey, ifc_class, name, origin, size):
+    """Élément parallélépipédique : origine (x, y, z) et dimensions (dx, dy, dz)
+    en mètres."""
+    element = create(model, ifc_class, name)
+    ifcopenshell.api.spatial.assign_container(model, products=[element], relating_structure=storey)
+    place(model, element, *origin)
+    representation = ifcopenshell.api.geometry.add_wall_representation(
+        model, context=body, length=size[0], thickness=size[1], height=size[2])
+    ifcopenshell.api.geometry.assign_representation(model, product=element, representation=representation)
+    return element
+
+
+@unittest.skipUnless(HAS_IFCCLASH, "IfcOpenShell ou IfcClash ne sont pas installés")
+class CoordinationTest(unittest.TestCase):
+    """Cohérence entre lots et conflits géométriques avec le vrai IfcClash :
+    une gaine CVC traverse une poutre du lot structure."""
+
+    def setUp(self):
+        from checkers_bonsai.core import clashes, federation, recette, spatial
+        self.clashes, self.federation, self.recette, self.spatial = clashes, federation, recette, spatial
+        self.dir = tempfile.mkdtemp()
+        self.cvc, body, rdc = build_lot()
+        project_guid = self.cvc.by_type("IfcProject")[0].GlobalId
+        self.duct = box(self.cvc, body, rdc, "IfcDuctSegment", "Gaine soufflage", (0, 0, 2.6), (6, 0.4, 0.4))
+        self.far = box(self.cvc, body, rdc, "IfcDuctSegment", "Gaine reprise", (0, 5, 2.6), (6, 0.4, 0.4))
+        structure, body, rdc = build_lot(project_guid=project_guid)
+        self.beam = box(structure, body, rdc, "IfcBeam", "Poutre", (2, -1, 2.5), (0.3, 4, 0.5))
+        self.str_path = os.path.join(self.dir, "STR.ifc")
+        structure.write(self.str_path)
+        shifted, body, rdc = build_lot(storey_z=0.2, building_y=0.25, eastings=652000.5, project_guid=project_guid)
+        box(shifted, body, rdc, "IfcPipeSegment", "Canalisation", (10, 10, 1), (2, 0.1, 0.1))
+        self.plb_path = os.path.join(self.dir, "PLB.ifc")
+        shifted.write(self.plb_path)
+
+    def test_federation(self):
+        lots = self.federation.open_lots([("STR", self.str_path), ("PLB", self.plb_path)])
+        result = self.federation.check_federation(self.cvc, lots, self.spatial.LevelCache())
+        status = {(c["lot"], c["code"]): c["status"] for c in result["checks"]}
+        for code in ("C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09"):
+            self.assertEqual(status[("STR", code)], "ok", (code, result["checks"]))
+        for code in ("C04", "C05", "C07"):
+            self.assertEqual(status[("PLB", code)], "ko", (code, result["checks"]))
+        messages = {c["code"]: c["message"] for c in result["checks"] if c["lot"] == "PLB"}
+        self.assertIn("0.250 m", messages["C04"])
+        self.assertIn("R+1", messages["C05"])
+        self.assertFalse(result["frame_ok"])
+
+    def test_clashes(self):
+        lots = self.federation.open_lots([("STR", self.str_path)])
+        rules = [self.clashes.ClashRule(other="STR", selector_a="IfcDuctSegment", selector_b="IfcBeam"),
+                 self.clashes.ClashRule(selector_a="IfcDuctSegment", selector_b="IfcDuctSegment",
+                                        mode="clearance", distance=5.0)]
+        result = self.clashes.run_clashes(self.cvc, lots, rules, self.spatial.LevelCache())
+        self.assertEqual([r["status"] for r in result["rules"]], ["ko", "ko"], result["rules"])
+        external = [d for d in result["details"] if d["b_guid"] == self.beam.GlobalId]
+        self.assertEqual([d["a_guid"] for d in external], [self.duct.GlobalId])     # la gaine éloignée passe
+        internal = [d for d in result["details"] if d["b_guid"] != self.beam.GlobalId]
+        self.assertEqual(len(internal), 1)                                           # paire comptée une fois
+        point = next(a["point"] for a in result["anomalies"].values() if a["related_guids"])
+        self.assertTrue(1.9 <= point[0] <= 2.4 and 2.4 <= point[2] <= 3.1, point)
+
+    def test_recette(self):
+        settings = self.recette.RecetteSettings(
+            check_structure=False, lot="CVC", lots=[("STR", self.str_path)],
+            clash_rules=[self.clashes.ClashRule(other="STR", selector_a="IfcDuctSegment", selector_b="IfcBeam")])
+        result = self.recette.run_recette(self.cvc, settings)
+        self.assertEqual(result.federation_verdict, self.recette.VALIDATED)
+        self.assertEqual(result.clash_verdict, self.recette.RESERVED)
+        self.assertEqual(result.invalid_guids, {self.duct.GlobalId})
+        from checkers_bonsai.core import bcf, report
+        report.write_report(result, os.path.join(self.dir, "fiche.xlsx"))
+        stats = bcf.write_bcf(os.path.join(self.dir, "conflits.bcf"), result.anomalies, project_key="p", lot="CVC")
+        self.assertEqual(stats["components"], 2)
 
 
 if __name__ == "__main__":

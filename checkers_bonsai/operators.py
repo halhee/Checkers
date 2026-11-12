@@ -7,7 +7,8 @@ import bpy
 from bpy_extras.io_utils import ExportHelper
 
 from . import bonsai_link
-from .core import bcf, diagnostic, journal, recette
+from .core import bcf, clashes, diagnostic, journal, recette
+from .core.federation import CURRENT, lot_name
 from .core.spatial import LevelCache
 from .core.trace import model_info
 from .props import ALL_RULES
@@ -88,7 +89,13 @@ def _settings(props) -> recette.RecetteSettings:
     def path(value):
         return bpy.path.abspath(value) if value else ""
 
+    lots = [(lot.name.strip(), path(lot.path)) for lot in props.lots if lot.path]
+    rules = [clashes.ClashRule(other=rule.other.strip() or CURRENT, selector_a=rule.selector_a.strip(),
+                               selector_b=rule.selector_b.strip(), mode=rule.mode, distance=rule.distance,
+                               severity=rule.severity)
+             for rule in props.clash_rules] if props.check_clashes else []
     return recette.RecetteSettings(
+        lots=lots, check_federation=props.check_federation and bool(lots), clash_rules=rules,
         ids_path=path(props.ids_path), rules_path=path(props.rules_path),
         corps_etat=None if props.corps_etat in ("", ALL_RULES) else props.corps_etat,
         check_structure=props.check_structure, survey_path=path(props.survey_path),
@@ -113,6 +120,14 @@ def _summary(result) -> str:
     if result.survey_rate is not None:
         lines.append(f"Terrain : {_pct(result.survey_rate)} sans écart "
                      f"({result.survey_result['checks']} vérifications)")
+    for label, outcome in (("Cohérence entre lots", result.federation), ("Conflits", result.clashes)):
+        if outcome is not None:
+            found = ", ".join(f"{outcome[key]} {name}" for key, name in
+                              (("blocking", "bloquant(s)"), ("major", "majeur(s)"), ("minor", "mineur(s)"),
+                               ("errors", "non exécuté(s)")) if outcome[key])
+            if outcome is result.clashes:
+                found = f"{outcome['total']} conflit(s)" + (f" — {found}" if found else "")
+            lines.append(f"{label} : {found or 'aucun constat'}")
     return "\n".join(lines)
 
 
@@ -133,14 +148,16 @@ def _view3d_spaces(context):
 class CHECKERS_OT_run_recette(bpy.types.Operator):
     bl_idname = "checkers.run_recette"
     bl_label = "Lancer la recette"
-    bl_description = ("Contrôle le modèle IFC ouvert : structure, IDS, règles Excel et relevé terrain, "
-                      "selon les choix ci-dessus")
+    bl_description = ("Contrôle le modèle IFC ouvert : structure, IDS, règles Excel, relevé terrain et "
+                      "coordination avec les autres lots, selon les choix ci-dessus")
 
     @classmethod
     def poll(cls, context):
         props = context.scene.checkers
+        coordination = any(lot.path for lot in props.lots) and props.check_federation or \
+            props.check_clashes and len(props.clash_rules) > 0
         return bonsai_link.current_ifc() is not None and bool(
-            props.ids_path or props.rules_path or props.check_structure or props.survey_path)
+            props.ids_path or props.rules_path or props.check_structure or props.survey_path or coordination)
 
     def execute(self, context):
         props = context.scene.checkers
@@ -464,6 +481,98 @@ class CHECKERS_OT_export_survey(bpy.types.Operator, ExportHelper):
         return {"FINISHED"}
 
 
+class CHECKERS_OT_add_lot(bpy.types.Operator):
+    bl_idname = "checkers.add_lot"
+    bl_label = "Ajouter un lot"
+    bl_description = "Ajoute la maquette IFC d'un autre lot, à comparer à la maquette ouverte"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.checkers
+        props.lots.add()
+        props.lot_index = len(props.lots) - 1
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_remove_lot(bpy.types.Operator):
+    bl_idname = "checkers.remove_lot"
+    bl_label = "Retirer le lot"
+    bl_description = "Retire ce lot de la liste (le fichier n'est pas supprimé)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return len(context.scene.checkers.lots) > 0
+
+    def execute(self, context):
+        props = context.scene.checkers
+        if 0 <= props.lot_index < len(props.lots):
+            props.lots.remove(props.lot_index)
+            props.lot_index = max(0, min(props.lot_index, len(props.lots) - 1))
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_add_clash_rule(bpy.types.Operator):
+    bl_idname = "checkers.add_clash_rule"
+    bl_label = "Ajouter une règle"
+    bl_description = "Ajoute une règle de conflits (par défaut : conflits internes, intersection de plus de 1 cm)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.checkers
+        props.clash_rules.add()
+        props.clash_rule_index = len(props.clash_rules) - 1
+        props.check_clashes = True
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_remove_clash_rule(bpy.types.Operator):
+    bl_idname = "checkers.remove_clash_rule"
+    bl_label = "Retirer la règle"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return len(context.scene.checkers.clash_rules) > 0
+
+    def execute(self, context):
+        props = context.scene.checkers
+        if 0 <= props.clash_rule_index < len(props.clash_rules):
+            props.clash_rules.remove(props.clash_rule_index)
+            props.clash_rule_index = max(0, min(props.clash_rule_index, len(props.clash_rules) - 1))
+        return {"FINISHED"}
+
+
+class CHECKERS_OT_default_clash_rules(bpy.types.Operator):
+    bl_idname = "checkers.default_clash_rules"
+    bl_label = "Une règle par lot"
+    bl_description = ("Ajoute, pour chaque lot associé qui n'en a pas encore, une règle « intersection de plus de "
+                      "1 cm, tous éléments » avec la maquette ouverte")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return any(lot.path for lot in context.scene.checkers.lots)
+
+    def execute(self, context):
+        props = context.scene.checkers
+        covered = {rule.other for rule in props.clash_rules}
+        added = 0
+        for lot in props.lots:
+            if not lot.path:
+                continue
+            name = lot_name(lot.name, bpy.path.abspath(lot.path))
+            if name in covered:
+                continue
+            rule = props.clash_rules.add()
+            rule.other = name
+            added += 1
+        props.check_clashes = props.check_clashes or added > 0
+        props.clash_rule_index = max(0, len(props.clash_rules) - 1)
+        self.report({"INFO"}, f"{added} règle(s) ajoutée(s)")
+        return {"FINISHED"}
+
+
 class CHECKERS_OT_export_tracking(bpy.types.Operator, ExportHelper):
     bl_idname = "checkers.export_tracking"
     bl_label = "Tableau de suivi (Excel)"
@@ -536,4 +645,9 @@ classes = (
     CHECKERS_OT_export_survey,
     CHECKERS_OT_export_tracking,
     CHECKERS_OT_diagnostic,
+    CHECKERS_OT_add_lot,
+    CHECKERS_OT_remove_lot,
+    CHECKERS_OT_add_clash_rule,
+    CHECKERS_OT_remove_clash_rule,
+    CHECKERS_OT_default_clash_rules,
 )

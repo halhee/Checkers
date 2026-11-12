@@ -59,9 +59,19 @@ class OfflineGuaranteeTest(unittest.TestCase):
 
 
 class _Collection(list):
+    """CollectionProperty simulée ; `defaults` : valeurs par défaut des
+    propriétés d'un nouvel élément, comme dans Blender."""
+
+    def __init__(self, **defaults):
+        super().__init__()
+        self.defaults = defaults
+
     def add(self):
-        self.append(types.SimpleNamespace())
+        self.append(types.SimpleNamespace(**self.defaults))
         return self[-1]
+
+    def remove(self, index):
+        del self[index]
 
     def clear(self):
         del self[:]
@@ -97,7 +107,11 @@ class ExtensionTest(unittest.TestCase):
             ids_path="", rules_path=RULES_XLSX, corps_etat="ARC", check_structure=True, previous_path="",
             survey_path="", journals_dir="", diagnostic="",
             lot="Lot 02", phase="DOE", tester="J. Martin", marking="confidentiel", threshold_ok=0.98,
-            threshold_reserve=0.9, bcf_author="", anomalies=_Collection(), anomaly_index=0)
+            threshold_reserve=0.9, bcf_author="", anomalies=_Collection(), anomaly_index=0,
+            lots=_Collection(name="", path=""), lot_index=0, check_federation=True, check_clashes=False,
+            clash_rules=_Collection(other="Ce modèle", selector_a="", selector_b="", mode="intersection",
+                                    distance=0.01, severity="Majeur"),
+            clash_rule_index=0)
         props.marking_text = types.MethodType(CheckersProperties.marking_text, props)
         operators.clear_results(props)
         self.props = props
@@ -303,8 +317,7 @@ class ExtensionTest(unittest.TestCase):
         n'est pas une chaîne."""
         from checkers_bonsai import props as props_module, ui
         test = self
-        known_props = set(props_module.CheckersProperties.__annotations__) | \
-            set(props_module.CheckersAnomaly.__annotations__)
+        known_props = set().union(*(cls.__annotations__ for cls in props_module.classes))
         known_operators = {cls.bl_idname for cls in self.ops.classes}
 
         class Layout:
@@ -320,6 +333,7 @@ class ExtensionTest(unittest.TestCase):
                 self.drawn.append(text)
 
             def prop(self, data, name, **kwargs):
+                test.assertTrue(hasattr(data, name), name)
                 test.assertIn(name, known_props)
 
             def operator(self, idname, **kwargs):
@@ -336,14 +350,17 @@ class ExtensionTest(unittest.TestCase):
 
         def draw_all():
             for cls in ui.classes:
-                if cls is ui.CHECKERS_UL_anomalies:
-                    continue
+                if hasattr(cls, "draw_item"):
+                    continue                                         # listes : dessinées plus bas
                 if getattr(cls, "poll", None) is None or cls.poll(self.context):
                     panel = cls()
                     panel.layout = Layout()
                     panel.draw(self.context)
 
         self.props.rules_path = RULES_XLSX
+        self.ops.CHECKERS_OT_add_lot().execute(self.context)
+        self.ops.CHECKERS_OT_add_clash_rule().execute(self.context)  # coche aussi « conflits »
+        self.assertTrue(self.props.check_clashes)
         draw_all()                                                   # avant toute recette
         self.run_recette()
         self.ops.CHECKERS_OT_diagnostic().execute(self.context)
@@ -351,6 +368,9 @@ class ExtensionTest(unittest.TestCase):
         self.assertTrue(any(text.startswith("Verdict : ") for text in Layout.drawn))
         row = ui.CHECKERS_UL_anomalies()
         row.draw_item(self.context, Layout(), None, self.props.anomalies[0], 0, None, "", 0)
+        ui.CHECKERS_UL_lots().draw_item(self.context, Layout(), None, self.props.lots[0], 0, None, "", 0)
+        ui.CHECKERS_UL_clash_rules().draw_item(self.context, Layout(), None, self.props.clash_rules[0], 0, None, "", 0)
+        self.assertIn("Conflit interne (intersection, 1 cm)", Layout.drawn)
         self.tool.Ifc.file = None                                    # sans modèle : suivi et installation seulement
         Layout.drawn.clear()
         draw_all()

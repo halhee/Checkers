@@ -3,6 +3,7 @@
 Extension Blender pour [Bonsai](https://bonsaibim.org/) qui fait la recette de la maquette IFC ouverte, de la réception à l'exploitation :
 
 - **contrôles** : structure du modèle, exigences **IDS** (buildingSMART), **PSet requis** (fichier Excel), **relevé terrain** ;
+- **coordination entre lots** : cohérence de référence avec les maquettes des autres lots (origine, étages, géoréférencement…) et **conflits géométriques** avec IfcClash, selon des règles réglables ;
 - **verdict** (validé, avec réserves, rejeté) selon des seuils réglables ;
 - anomalies **sélectionnables dans la vue 3D**, coloration conforme / non conforme ;
 - **suivi entre livraisons** : anomalies levées, persistantes et nouvelles depuis la recette précédente ;
@@ -11,7 +12,7 @@ Extension Blender pour [Bonsai](https://bonsaibim.org/) qui fait la recette de l
 - **inventaire d'exploitation** et **fiche de relevé terrain** : équipements et locaux de la maquette ;
 - **tableau de suivi** : état de tous les lots à partir des journaux de recette.
 
-L'extension fonctionne **entièrement hors ligne** : aucun accès réseau, aucune dépendance à installer (Bonsai fournit ifcopenshell, ifctester et openpyxl).
+L'extension fonctionne **entièrement hors ligne** : aucun accès réseau, aucune dépendance à installer (Bonsai fournit ifcopenshell, ifctester, IfcClash et openpyxl).
 
 ## Installation
 
@@ -31,6 +32,7 @@ Dans la vue 3D, ouvrir la barre latérale (`N`) et l'onglet **Checkers**. Les se
    - **IDS** : les exigences du cahier des charges BIM.
    - **Règles Excel** : facultatif. Si le fichier déclare des corps d'état, choisir celui du lot.
    - **Relevé terrain** : facultatif, la fiche de relevé remplie sur site (voir plus bas).
+   - **Coordination entre lots** : facultatif, les maquettes des autres lots et les règles de conflits (voir plus bas).
    - Le bouton à droite des champs IDS et Règles Excel charge un exemple fourni avec l'extension.
 2. **Recette**
    - Renseigner le lot, la phase (suggestions ESQ à DOE, exploitation), la personne qui recette et une mention de confidentialité facultative.
@@ -107,9 +109,40 @@ Les écarts deviennent des anomalies de source « Terrain » : équipement absen
 
 La comparaison se fait avec les valeurs actuelles de la maquette. Un équipement laissé vide dans la fiche est compté « non vérifié », pas « conforme ».
 
+### Coordination entre lots
+
+Dans la section **Coordination entre lots**, ajouter avec **+** les maquettes IFC des autres lots (structure, CVC, plomberie…), chacune avec un nom court. Ces fichiers sont seulement lus.
+
+**Cohérence de référence** (case cochée par défaut) : la maquette ouverte est comparée à chaque lot, sans géométrie.
+
+| Code | Contrôle | Gravité |
+|---|---|---|
+| C01 | Même schéma IFC | Majeur |
+| C02 | Même projet (GlobalId de l'`IfcProject`) | Majeur ; mineur si seul le GlobalId diffère |
+| C03 | Même unité de longueur | Mineur |
+| C04 | Même point d'origine et même orientation du bâtiment (1 cm, 0,01°) | Majeur |
+| C05 | Étages de même nom à la même altitude (1 cm) | Majeur, par étage |
+| C06 | Étages de même nom des deux côtés | Mineur, par étage |
+| C07 | Même géoréférencement (`IfcMapConversion`) | Majeur |
+| C08 | Même nord géographique | Majeur |
+| C09 | Aucun élément de même GlobalId dans les deux lots | Bloquant, par élément |
+
+Un C04 ou un C05 en échec signifie que les maquettes ne se superposent pas : la fédération est fausse et les conflits géométriques entre ces lots n'ont pas de sens. La recette l'indique alors dans ses avertissements. Les entités spatiales (site, bâtiment, étages) peuvent être partagées ; un élément physique ne doit appartenir qu'à un lot.
+
+**Conflits géométriques** (case à cocher, avec IfcClash fourni par Bonsai) : chaque règle confronte une sélection de la maquette ouverte (A) à une sélection d'un lot ou de la maquette ouverte elle-même (B) :
+
+- **Sélections** : requêtes IfcOpenShell, par exemple `IfcDuctSegment, IfcPipeSegment` ou `IfcBeam, IfcColumn, IfcSlab`. Vide : tous les éléments physiques, hors réservations.
+- **Mode** : *intersection* (pénétration au-delà de la tolérance), *collision* (contact compris), *dégagement* (distance minimale exigée, par exemple pour l'accès maintenance).
+- **Distance** et **gravité** propres à chaque règle.
+- **Une règle par lot** crée une règle d'intersection à 1 cm avec chaque lot.
+
+Chaque conflit devient une anomalie de source « Conflit », regroupée par étage, classe et règle. La sélection 3D porte sur l'élément de la maquette ouverte ; dans le BCF, l'élément de l'autre lot est aussi sélectionné (sans couleur) et une caméra est placée sur le point de conflit. L'onglet « Conflits » de la fiche liste chaque paire avec sa distance et ses coordonnées.
+
+Gravité : un conflit bloquant rejette la maquette, un conflit majeur ou une règle qui n'a pas pu s'exécuter (sélection vide, géométrie non calculable) donne des réserves, un conflit mineur est seulement signalé.
+
 ### Verdict
 
-L'IDS, les règles Excel et le relevé terrain donnent chacun *validé* au-dessus du premier seuil, *validé avec réserves* au-dessus du second, *rejeté* en dessous. Une spécification IDS obligatoire sans aucun élément concerné entraîne le rejet. Le verdict global est le plus sévère des contrôles réalisés.
+L'IDS, les règles Excel et le relevé terrain donnent chacun *validé* au-dessus du premier seuil, *validé avec réserves* au-dessus du second, *rejeté* en dessous. Une spécification IDS obligatoire sans aucun élément concerné entraîne le rejet. La cohérence entre lots et les conflits suivent leurs gravités (comme la structure). Le verdict global est le plus sévère des contrôles réalisés.
 
 Les anomalies sont regroupées par étage ou, en IFC 4.3, par partie d'ouvrage (`IfcFacilityPart`). Un élément placé dans un local est rattaché à l'étage du local.
 
@@ -157,25 +190,26 @@ Pour un export normalisé COBie, Bonsai propose le module *Facility Management* 
 
 ## Limites connues
 
-- L'extension n'a pas de test automatique dans Blender : les tests couvrent le moteur, avec des doublures puis avec les vraies bibliothèques IfcOpenShell et ifctester, mais le panneau lui-même doit être validé dans Bonsai à chaque version.
+- L'extension n'a pas de test automatique dans Blender : les tests couvrent le moteur, avec des doublures puis avec les vraies bibliothèques IfcOpenShell, ifctester et IfcClash, mais le panneau lui-même doit être validé dans Bonsai à chaque version.
 - La fiche de recette et les journaux sont des fichiers modifiables : la valeur probante vient du visa et des empreintes SHA-256, pas d'une signature électronique.
 - L'empreinte est celle du fichier enregistré, alors que le contrôle porte sur le modèle ouvert.
-- Les points de vue BCF n'ont pas de caméra : l'outil de destination cadre la sélection. L'extension écrit des BCF, elle ne relit pas les réponses.
+- Seuls les points de vue BCF des conflits ont une caméra ; ailleurs l'outil de destination cadre la sélection. L'extension écrit des BCF, elle ne relit pas les réponses.
 - Le contrôle anti-ReDoS des motifs regex d'un IDS est une heuristique : n'ouvrir que des IDS de provenance connue.
 - La recette s'exécute dans le fil principal de Blender, dont l'interface reste figée pendant le calcul.
-- Un seul modèle par recette : pas de contrôle de cohérence entre maquettes, pas de détection de conflits entre lots (voir IfcClash dans Bonsai), pas de modèles liés.
+- Coordination : la recette porte sur la maquette ouverte, comparée aux autres lots ; les conflits entre deux lots tiers ne sont pas cherchés. Checkers signale les écarts, il ne recale pas les maquettes.
+- Conflits : le calcul géométrique peut prendre plusieurs minutes sur de grosses maquettes, l'interface restant figée ; restreindre les sélections. Les résultats bruts d'IfcClash comportent des conflits admis (gaine dans sa réservation, élément posé sur un autre…) : régler mode, tolérance et sélections plutôt que tout tester contre tout. Au-delà de 50 000 conflits, le détail est tronqué.
 - L'inventaire ne retient que la distribution technique et les appareils de transport : un équipement modélisé en objet générique n'y figure pas.
 
 ## Développement
 
 ```bash
 python -m unittest discover tests               # logique de Checkers, sans Blender ni IfcOpenShell
-python -m unittest discover tests_integration   # avec les vraies bibliothèques (pip install ifcopenshell ifctester openpyxl)
+python -m unittest discover tests_integration   # avec les vraies bibliothèques (pip install ifcopenshell ifctester ifcclash openpyxl)
 python build.py                                 # archive de l'extension
 ```
 
 - `tests/` utilise des doublures (`tests/fakes/`) : rapide, sans dépendance, mais ne prouve pas l'accord avec les bibliothèques réelles.
-- `tests_integration/` construit une maquette avec IfcOpenShell et déroule une recette complète avec ifctester. Ces tests sont sautés si les bibliothèques ne sont pas installées.
+- `tests_integration/` construit une maquette avec IfcOpenShell et déroule une recette complète avec ifctester, puis confronte deux lots avec IfcClash. Ces tests sont sautés si les bibliothèques ne sont pas installées.
 - L'intégration continue (`.github/workflows/tests.yml`) lance les deux, sous Python 3.11 et 3.13, et valide les BCF contre les schémas buildingSMART.
 
 Pour valider le BCF en local, définir `BCF_XSD_DIR` (voir `tests/support.py`).
@@ -192,6 +226,8 @@ checkers_bonsai/
     ├── structure.py        # contrôles de structure
     ├── ids.py              # contrôle IDS (ifctester)
     ├── rules.py, psets.py  # règles Excel et contrôle des PSet
+    ├── federation.py       # cohérence de référence entre lots
+    ├── clashes.py          # conflits géométriques (IfcClash)
     ├── survey.py           # relevé terrain
     ├── journal.py          # journal de recette et comparaison entre livraisons
     ├── tracking.py         # tableau de suivi

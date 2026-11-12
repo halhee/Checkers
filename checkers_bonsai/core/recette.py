@@ -1,5 +1,6 @@
-"""Recette d'une maquette IFC : contrôles de structure, IDS, règles Excel
-et relevé terrain, verdict, et comparaison avec la recette précédente.
+"""Recette d'une maquette IFC : contrôles de structure, IDS, règles Excel,
+relevé terrain, cohérence et conflits avec les autres lots, verdict, et
+comparaison avec la recette précédente.
 
 Indépendant de Blender : prend un modèle `ifcopenshell.file` déjà ouvert
 (celui de Bonsai) et des chemins de fichiers.
@@ -10,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from . import clashes as clash_check
+from . import federation
 from . import ids as ids_check
 from . import journal
 from . import rules as rules_file
@@ -37,6 +40,9 @@ class RecetteSettings:
     check_structure: bool = True
     survey_path: str = ""            # fiche de relevé terrain remplie (.xlsx)
     previous_path: str = ""          # journal JSON de la recette précédente
+    lots: list = field(default_factory=list)          # autres lots : liste de (nom, chemin .ifc)
+    check_federation: bool = True                     # cohérence de référence avec les autres lots
+    clash_rules: list = field(default_factory=list)   # liste de clashes.ClashRule
     lot: str = ""
     phase: str = ""
     tester: str = ""
@@ -57,6 +63,9 @@ class RecetteResult:
     ids_result: Optional[dict] = None
     structure: Optional[dict] = None
     survey_result: Optional[dict] = None
+    federation: Optional[dict] = None
+    clashes: Optional[dict] = None
+    lots: list = field(default_factory=list)          # lots associés : name, file_name, sha256, modified
     evolution: Optional[dict] = None                 # comparaison avec la recette précédente
     anomalies: list = field(default_factory=list)
     valid_guids: set = field(default_factory=set)
@@ -66,6 +75,8 @@ class RecetteResult:
     ids_verdict: Optional[str] = None
     structure_verdict: Optional[str] = None
     survey_verdict: Optional[str] = None
+    federation_verdict: Optional[str] = None
+    clash_verdict: Optional[str] = None
     unsaved_changes: Optional[bool] = None
     warnings: list = field(default_factory=list)
     duration_s: float = 0.0
@@ -88,7 +99,7 @@ class RecetteResult:
     def sources(self) -> set:
         """Sources d'anomalies contrôlées par cette recette."""
         done = (("Structure", self.structure), ("IDS", self.ids_result), ("PSet", self.pset),
-                ("Terrain", self.survey_result))
+                ("Terrain", self.survey_result), ("Cohérence", self.federation), ("Conflit", self.clashes))
         return {source for source, outcome in done if outcome is not None}
 
 
@@ -110,7 +121,8 @@ def ids_verdict(result: dict, settings: RecetteSettings) -> Optional[str]:
     return rate_verdict(result["pass_rate"], settings)
 
 
-def structure_verdict(result: dict) -> str:
+def severity_verdict(result: dict) -> str:
+    """Verdict d'un contrôle à gravités (structure, cohérence, conflits)."""
     if result["blocking"]:
         return REJECTED
     # Un contrôle qui n'a pas pu s'exécuter ne prouve rien : pas de « validé ».
@@ -119,10 +131,15 @@ def structure_verdict(result: dict) -> str:
     return VALIDATED
 
 
+structure_verdict = severity_verdict
+
+
 def _check_settings(settings: RecetteSettings) -> None:
-    if not (settings.rules_path or settings.ids_path or settings.check_structure or settings.survey_path):
-        raise ValueError("Aucun contrôle demandé : choisissez un IDS, des règles Excel, un relevé terrain ou le "
-                         "contrôle de structure.")
+    federation_wanted = settings.check_federation and settings.lots
+    if not (settings.rules_path or settings.ids_path or settings.check_structure or settings.survey_path
+            or federation_wanted or settings.clash_rules):
+        raise ValueError("Aucun contrôle demandé : choisissez un IDS, des règles Excel, un relevé terrain, le "
+                         "contrôle de structure ou la coordination avec d'autres lots.")
     if not 0.0 <= settings.threshold_reserve <= settings.threshold_ok <= 1.0:
         raise ValueError("Seuils incohérents : le seuil « avec réserves » doit être inférieur ou égal au seuil "
                          "« validé », tous deux entre 0 et 100 %.")
@@ -137,18 +154,24 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
     # suite, pas après plusieurs minutes de calcul.
     previous = journal.load_record(settings.previous_path) if settings.previous_path else None
     survey_rows = survey_check.load_survey(settings.survey_path) if settings.survey_path else None
+    lots = federation.open_lots(settings.lots) if settings.lots else []
+    if settings.clash_rules:
+        clash_check.validate_rules(settings.clash_rules, {lot["name"] for lot in lots})
 
     start = time.time()
     result = RecetteResult(settings=settings, date=datetime.now(), model=model_info(ifc_file, model_path),
                            unsaved_changes=unsaved_changes)
     level_of = LevelCache()
     anomalies = []
+    result.lots = [{"name": lot["name"], "file_name": lot["info"].get("name", ""),
+                    "sha256": lot["info"].get("sha256", ""), "modified": lot["info"].get("modified", "")}
+                   for lot in lots]
 
-    def add(key, source, guids, severity=None, count=None):
+    def add(key, source, guids, severity=None, count=None, **extra):
         level, ifc_class, requirement = key
         anomalies.append({"level": level, "ifc_class": ifc_class, "requirement": requirement, "source": source,
                           "severity": severity, "count": len(guids) if count is None else count,
-                          "guids": sorted(guids)})
+                          "guids": sorted(guids), **extra})
 
     if settings.check_structure:
         result.structure = structure_check.check_structure(ifc_file, level_of)
@@ -204,6 +227,32 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
         for key, count in result.survey_result["model_anomalies"].items():
             add(key, "Terrain", (), count=count)
 
+    if lots and settings.check_federation:
+        result.federation = federation.check_federation(ifc_file, lots, level_of)
+        result.federation_verdict = severity_verdict(result.federation)
+        for key, item in result.federation["anomalies"].items():
+            add(key, "Cohérence", item["guids"], item["severity"], item["count"])
+        if result.federation["errors"]:
+            result.warnings.append(f"{result.federation['errors']} contrôle(s) de cohérence entre lots n'ont pas pu "
+                                   f"être exécutés (voir l'onglet « Cohérence »).")
+
+    if settings.clash_rules:
+        result.clashes = clash_check.run_clashes(ifc_file, lots, settings.clash_rules, level_of)
+        result.clash_verdict = severity_verdict(result.clashes)
+        for key, item in result.clashes["anomalies"].items():
+            add(key, "Conflit", item["guids"], item["severity"], item["count"],
+                related_guids=sorted(item["related_guids"]), point=item["point"])
+        for rule in result.clashes["rules"]:
+            if rule["status"] == "erreur":
+                result.warnings.append(f"Conflits : règle « {rule['label']} » non exécutée ({rule['message']}).")
+        if result.federation is not None and not result.federation["frame_ok"] \
+                and any(rule.other != federation.CURRENT for rule in settings.clash_rules):
+            result.warnings.append("Les lots ne sont pas tous dans le même repère (unité, origine ou altitudes : "
+                                   "voir « Cohérence ») : les conflits entre lots ne sont pas fiables.")
+        elif result.federation is None and any(rule.other != federation.CURRENT for rule in settings.clash_rules):
+            result.warnings.append("Cohérence entre lots non contrôlée : les conflits entre lots supposent que les "
+                                   "maquettes partagent le même repère.")
+
     result.anomalies = sorted(anomalies, key=lambda a: (
         _ANOMALY_RANK[a["severity"]], -a["count"], a["level"], a["ifc_class"], a["requirement"]))
 
@@ -222,7 +271,7 @@ def run_recette(ifc_file, settings: RecetteSettings, model_path: str = "",
     result.valid_guids = checked - result.invalid_guids
 
     verdicts = [v for v in (result.structure_verdict, result.pset_verdict, result.ids_verdict,
-                            result.survey_verdict) if v]
+                            result.survey_verdict, result.federation_verdict, result.clash_verdict) if v]
     result.verdict = max(verdicts, key=_SEVERITY.get) if verdicts else INCONCLUSIVE
 
     if unsaved_changes:
@@ -254,4 +303,7 @@ def describe_referentials(result: RecetteResult) -> str:
         parts.append(f"Relevé terrain « {result.survey.get('name', '')} »")
     if result.structure is not None:
         parts.append("contrôles de structure")
+    if result.federation is not None or result.clashes is not None:
+        names = ", ".join(f"« {lot['name']} »" for lot in (result.lots or []))
+        parts.append(f"coordination avec {names}" if names else "conflits internes")
     return " + ".join(parts)

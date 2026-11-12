@@ -20,7 +20,8 @@ def _icon(name: str) -> str:
 
 
 VERDICT_ICONS = {"Validé": "CHECKMARK", "Validé avec réserves": "ERROR", "Rejeté": "CANCEL"}
-SOURCE_ICONS = {"IDS": "FILE_TEXT", "PSet": "PROPERTIES", "Structure": "OUTLINER", "Terrain": "VIEWZOOM"}
+SOURCE_ICONS = {"IDS": "FILE_TEXT", "PSet": "PROPERTIES", "Structure": "OUTLINER", "Terrain": "VIEWZOOM",
+                "Cohérence": "LINKED", "Conflit": "MOD_BOOLEAN"}
 
 
 class CHECKERS_UL_anomalies(bpy.types.UIList):
@@ -31,6 +32,23 @@ class CHECKERS_UL_anomalies(bpy.types.UIList):
         requirement = f"{item.requirement} ({item.severity.lower()})" if item.severity else item.requirement
         row.label(text=requirement, icon=_icon(SOURCE_ICONS.get(item.source, "DOT")))
         row.operator("checkers.select_anomaly", text="", icon=_icon("RESTRICT_SELECT_OFF")).index = index
+
+
+class CHECKERS_UL_lots(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, placeholder="Nom du lot")
+        row.prop(item, "path", text="")
+
+
+class CHECKERS_UL_clash_rules(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.label(text=_rule_label(item), icon=_icon("MOD_BOOLEAN"))
+
+
+def _rule_label(rule) -> str:
+    from .core.clashes import ClashRule
+    return ClashRule(other=rule.other or "Ce modèle", mode=rule.mode, distance=rule.distance).label()
 
 
 class _Panel:
@@ -74,6 +92,45 @@ class CHECKERS_PT_referentials(_SubPanel, bpy.types.Panel):
         if props.rules_path and registry_for(props.rules_path):
             col.prop(props, "corps_etat")
         col.prop(props, "survey_path")
+
+
+class CHECKERS_PT_coordination(_SubPanel, bpy.types.Panel):
+    bl_label = "Coordination entre lots"
+    bl_idname = "CHECKERS_PT_coordination"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        props = context.scene.checkers
+        layout = self.layout
+        layout.label(text="Maquettes des autres lots :")
+        row = layout.row()
+        row.template_list("CHECKERS_UL_lots", "", props, "lots", props, "lot_index", rows=3)
+        col = row.column(align=True)
+        col.operator("checkers.add_lot", text="", icon=_icon("ADD"))
+        col.operator("checkers.remove_lot", text="", icon=_icon("REMOVE"))
+
+        col = layout.column(align=True)
+        col.prop(props, "check_federation")
+        col.prop(props, "check_clashes")
+        if not props.check_clashes:
+            return
+        row = layout.row()
+        row.template_list("CHECKERS_UL_clash_rules", "", props, "clash_rules", props, "clash_rule_index", rows=3)
+        col = row.column(align=True)
+        col.operator("checkers.add_clash_rule", text="", icon=_icon("ADD"))
+        col.operator("checkers.remove_clash_rule", text="", icon=_icon("REMOVE"))
+        layout.operator("checkers.default_clash_rules", icon=_icon("LINKED"))
+        if 0 <= props.clash_rule_index < len(props.clash_rules):
+            rule = props.clash_rules[props.clash_rule_index]
+            box = layout.box()
+            col = box.column(align=True)
+            col.prop(rule, "other")
+            col.prop(rule, "selector_a")
+            col.prop(rule, "selector_b")
+            col.prop(rule, "mode")
+            if rule.mode != "collision":
+                col.prop(rule, "distance")
+            col.prop(rule, "severity")
 
 
 class CHECKERS_PT_recette(_SubPanel, bpy.types.Panel):
@@ -179,8 +236,11 @@ class CHECKERS_PT_diagnostic(_Panel, bpy.types.Panel):
 
 classes = (
     CHECKERS_UL_anomalies,
+    CHECKERS_UL_lots,
+    CHECKERS_UL_clash_rules,
     CHECKERS_PT_main,
     CHECKERS_PT_referentials,
+    CHECKERS_PT_coordination,
     CHECKERS_PT_recette,
     CHECKERS_PT_results,
     CHECKERS_PT_deliverables,

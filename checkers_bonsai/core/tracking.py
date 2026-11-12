@@ -155,8 +155,8 @@ def write_tracking(path: str, records: list, rejected=(), marking: str = "", dat
 
     recette_columns = (("Date", 16), ("Projet", 30), ("Lot", 26), ("Phase", 22), ("Maquette", 30), ("Verdict", 22),
                        ("Structure", 20), ("IDS", 20), ("Taux IDS", 10), ("Règles Excel", 20), ("Taux PSet", 10),
-                       ("Terrain", 20), ("Taux terrain", 10), ("Anomalies ouvertes", 14), ("Réalisée par", 22),
-                       ("Journal", 40))
+                       ("Terrain", 20), ("Taux terrain", 10), ("Cohérence entre lots", 20), ("Conflits", 20),
+                       ("Anomalies ouvertes", 14), ("Réalisée par", 22), ("Journal", 40))
     ws = sheet("Recettes", recette_columns)
     for r, record in enumerate(records, 2):
         model = record["model"]
@@ -165,7 +165,7 @@ def write_tracking(path: str, records: list, rejected=(), marking: str = "", dat
             str((model.get("file") or {}).get("name") or ""), record.get("verdict", ""),
             _verdict(record, "structure"), _verdict(record, "ids"), _rate(record, "ids"),
             _verdict(record, "pset"), _rate(record, "pset"), _verdict(record, "survey"), _rate(record, "survey"),
-            open_anomalies(record), record.get("tester", "") if isinstance(record.get("tester", ""), str) else "",
+            _verdict(record, "federation"), _verdict(record, "clashes"), open_anomalies(record), record.get("tester", "") if isinstance(record.get("tester", ""), str) else "",
             record["_file"]], 6, {1: "DD/MM/YYYY HH:MM", 9: "0.0%", 11: "0.0%", 13: "0.0%"})
     ws.auto_filter.ref = f"A1:{get_column_letter(len(recette_columns))}{max(len(records) + 1, 1)}"
 

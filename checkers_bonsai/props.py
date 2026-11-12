@@ -3,6 +3,8 @@ import os
 import bpy
 
 from .core import rules as rules_file
+from .core.federation import CURRENT, lot_name
+from .core.structure import BLOCKING, MAJOR, MINOR
 
 PHASES = [
     "ESQ – Esquisse", "APS – Avant-projet sommaire", "APD – Avant-projet définitif", "PRO – Projet",
@@ -45,6 +47,49 @@ def _phase_search(self, context, edit_text):
     return [p for p in PHASES if edit_text.lower() in p.lower()] or PHASES
 
 
+def _other_lot_search(self, context, edit_text):
+    """Choix du lot comparé par une règle de conflits : la maquette ouverte
+    elle-même (conflits internes) ou l'un des lots associés."""
+    names = [CURRENT] + [lot_name(lot.name, lot.path) for lot in context.scene.checkers.lots if lot.path]
+    return [n for n in names if edit_text.lower() in n.lower()] or names
+
+
+class CheckersLot(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(
+        name="Nom", description="Nom du lot (ex. STR, CVC). Vide : nom du fichier. Il identifie les anomalies de "
+                                "coordination d'une recette à l'autre : ne le changez pas en cours de projet")
+    path: bpy.props.StringProperty(name="Maquette", subtype="FILE_PATH",
+                                   description="Maquette IFC de ce lot (.ifc)")
+
+
+class CheckersClashRule(bpy.types.PropertyGroup):
+    other: bpy.props.StringProperty(
+        name="Comparer avec", default=CURRENT, search=_other_lot_search,
+        description="Lot associé à comparer à la maquette ouverte, ou « Ce modèle » pour les conflits internes")
+    selector_a: bpy.props.StringProperty(
+        name="Éléments de ce modèle",
+        description="Requête IfcOpenShell (ex. « IfcDuctSegment, IfcPipeSegment »). Vide : tous les éléments "
+                    "physiques, hors réservations")
+    selector_b: bpy.props.StringProperty(
+        name="Éléments de l'autre lot",
+        description="Requête IfcOpenShell (ex. « IfcBeam, IfcColumn, IfcSlab »). Vide : tous les éléments "
+                    "physiques, hors réservations")
+    mode: bpy.props.EnumProperty(
+        name="Mode", default="intersection",
+        items=[("intersection", "Intersection", "Volumes qui s'interpénètrent de plus que la tolérance"),
+               ("collision", "Collision", "Volumes qui se touchent ou s'interpénètrent"),
+               ("clearance", "Dégagement", "Éléments plus proches que la distance demandée")])
+    distance: bpy.props.FloatProperty(
+        name="Distance", default=0.01, min=0.0, max=10.0, unit="LENGTH", precision=3,
+        description="Intersection : tolérance en deçà de laquelle un contact est ignoré. Dégagement : distance "
+                    "minimale exigée")
+    severity: bpy.props.EnumProperty(
+        name="Gravité", default=MAJOR,
+        items=[(BLOCKING, "Bloquant", "Un conflit entraîne le rejet"),
+               (MAJOR, "Majeur", "Un conflit entraîne des réserves"),
+               (MINOR, "Mineur", "Signalé, sans effet sur le verdict")])
+
+
 class CheckersAnomaly(bpy.types.PropertyGroup):
     """Ligne affichée dans le panneau. Les identifiants des éléments restent
     en mémoire (voir operators.py) : aucun n'est écrit dans le fichier .blend."""
@@ -74,6 +119,18 @@ class CheckersProperties(bpy.types.PropertyGroup):
         name="Relevé terrain", subtype="FILE_PATH",
         description="Fiche de relevé terrain remplie sur site (.xlsx, produite par le panneau « Exploitation et "
                     "terrain ») : les écarts avec la maquette deviennent des anomalies")
+    lots: bpy.props.CollectionProperty(type=CheckersLot)
+    lot_index: bpy.props.IntProperty()
+    check_federation: bpy.props.BoolProperty(
+        name="Cohérence de référence", default=True,
+        description="Même projet, unité, origine, étages, géoréférencement et nord que les lots associés ; aucun "
+                    "élément partagé. Rapide, sans géométrie")
+    check_clashes: bpy.props.BoolProperty(
+        name="Conflits géométriques (IfcClash)", default=False,
+        description="Applique les règles de conflits ci-dessous. Calcule la géométrie de toutes les maquettes : "
+                    "peut prendre plusieurs minutes, pendant lesquelles Blender est figé")
+    clash_rules: bpy.props.CollectionProperty(type=CheckersClashRule)
+    clash_rule_index: bpy.props.IntProperty()
     previous_path: bpy.props.StringProperty(
         name="Recette précédente", subtype="FILE_PATH",
         description="Journal (.json) enregistré avec la fiche de la recette précédente : permet de suivre les "
@@ -113,4 +170,4 @@ class CheckersProperties(bpy.types.PropertyGroup):
         return self.marking.strip().upper()
 
 
-classes = (CheckersAnomaly, CheckersProperties)
+classes = (CheckersLot, CheckersClashRule, CheckersAnomaly, CheckersProperties)

@@ -18,7 +18,11 @@ REQUIRED = (
     ("ifcopenshell.util.unit", ("get_project_unit",)),
     ("ifcopenshell.util.classification", ("get_references",)),
     ("ifcopenshell.util.system", ("get_element_systems",)),
+    ("ifcopenshell.util.selector", ("filter_elements",)),
+    # Un tuple : l'une des fonctions suffit (get_local_placement avant 0.9).
+    ("ifcopenshell.util.placement", (("get_placement", "get_local_placement"),)),
     ("ifctester.ids", ("open",)),
+    ("ifcclash.ifcclash", ("Clasher", "ClashSettings")),
     ("openpyxl", ("Workbook", "load_workbook")),
 )
 BONSAI_HINT = "vérifiez que Bonsai est installé et activé"
@@ -49,7 +53,8 @@ def run(ifc_file=None, bonsai_found=None) -> list:
         except Exception as exc:
             lines.append(_line(module_name, False, f"introuvable ({type(exc).__name__}) : {BONSAI_HINT}"))
             continue
-        missing = [name for name in functions if not hasattr(module, name)]
+        missing = [" ou ".join(name) if isinstance(name, tuple) else name for name in functions
+                   if not any(hasattr(module, n) for n in (name if isinstance(name, tuple) else (name,)))]
         version = _version(module_name)
         if missing:
             lines.append(_line(module_name, False, "fonction(s) absente(s) : " + ", ".join(missing)

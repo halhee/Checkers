@@ -1,5 +1,7 @@
 """Doublure minimale d'IfcOpenShell pour les tests (voir tests/fakes/README.md)."""
 import itertools
+import math
+import os
 
 # Hiérarchie de classes utilisée par les tests.
 PARENTS = {
@@ -21,6 +23,9 @@ PARENTS = {
     "IfcSpatialStructureElement": "IfcProduct", "IfcProduct": "IfcObject", "IfcProject": "IfcObject",
     "IfcSystem": "IfcObject", "IfcObject": "IfcObjectDefinition", "IfcObjectDefinition": "IfcRoot",
     "IfcPropertySet": "IfcRoot", "IfcMapConversion": None, "IfcRoot": None,
+    "IfcDuctSegment": "IfcFlowSegment",
+    "IfcGeometricRepresentationSubContext": "IfcGeometricRepresentationContext",
+    "IfcGeometricRepresentationContext": None,
 }
 # Classes absentes d'un schéma : by_type() lève une erreur, comme IfcOpenShell.
 MISSING = {
@@ -29,6 +34,41 @@ MISSING = {
 }
 _ids = itertools.count(1)
 version = "test"
+# Maquettes « enregistrées » pour ifcopenshell.open : {chemin absolu: modèle}.
+REGISTRY = {}
+
+
+def register(path, model):
+    """Associe un fichier (créé vide sur disque) à un modèle de test, pour
+    ifcopenshell.open."""
+    path = os.path.abspath(path)
+    with open_file(path, "w") as fh:
+        fh.write("ISO-10303-21;")
+    REGISTRY[path] = model
+    return path
+
+
+open_file = open
+
+
+def open(path):  # noqa: A001  (même nom que ifcopenshell.open)
+    try:
+        return REGISTRY[os.path.abspath(path)]
+    except KeyError:
+        raise OSError(f"Unable to open file for reading: {path}")
+
+
+class Placement:
+    """Placement absolu : matrice 4×4, translation en mètres."""
+
+    def __init__(self, x=0.0, y=0.0, z=0.0, angle=0.0):
+        c, s = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+        self.matrix = [[c, -s, 0.0, x], [s, c, 0.0, y], [0.0, 0.0, 1.0, z], [0.0, 0.0, 0.0, 1.0]]
+
+
+def place(entity, x=0.0, y=0.0, z=0.0, angle=0.0):
+    entity.ObjectPlacement = Placement(x, y, z, angle)
+    return entity
 
 
 class entity_instance:
@@ -95,6 +135,7 @@ class file:
         self.header = _Header()
         self.entities = []
         self.length_unit = "METRE"      # lu par util.unit.get_project_unit
+        self.unit_scale = 1.0           # lu par util.unit.calculate_unit_scale
 
     def add(self, cls, **attrs):
         entity = entity_instance(cls, **attrs)

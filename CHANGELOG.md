@@ -1,5 +1,14 @@
 # Historique des versions
 
+## 0.6.0
+
+Nouveautés :
+- Coordination entre lots : les maquettes des autres lots s'ajoutent au panneau. La cohérence de référence est contrôlée sans géométrie (C01 à C09 : schéma, projet, unités, origine, altitudes et noms d'étages, géoréférencement, nord, éléments partagés entre lots).
+- Conflits géométriques avec IfcClash, fourni par Bonsai : règles réglables (sélections, mode intersection, collision ou dégagement, distance, gravité), contre un autre lot ou à l'intérieur de la maquette. Les conflits sont des anomalies comme les autres : sélection 3D, fiche (onglets « Cohérence » et « Conflits »), BCF avec caméra sur le point de conflit et élément de l'autre lot sélectionné, suivi entre livraisons.
+- Avertissement quand des conflits sont cherchés entre maquettes qui ne partagent pas le même repère.
+- Journal et suivi : empreinte de chaque lot associé, signalée quand elle change entre deux recettes ; colonnes de verdict « Cohérence entre lots » et « Conflits » dans le tableau de suivi.
+- Vérification de l'installation : IfcClash, les requêtes de sélection et le calcul de placement sont contrôlés.
+
 ## 0.5.0
 
 Nouveautés :

@@ -99,6 +99,13 @@ def topic_description(anomaly: dict, lot: str = "", referentials: str = "", mark
     elif source == "Terrain":
         name = requirement[len("Terrain : "):] if requirement.startswith("Terrain : ") else requirement
         what = f"Écart entre la maquette et le relevé fait sur site : {name}."
+    elif source == "Cohérence":
+        what = f"{requirement} : les maquettes de ces lots ne partagent pas le même cadre de référence."
+    elif source == "Conflit":
+        what = f"{requirement}."
+        if anomaly.get("related_guids"):
+            what += (f" Éléments de l'autre lot concernés : {len(anomaly['related_guids'])} (sélectionnés dans le "
+                     f"point de vue, avec ceux de cette maquette).")
     else:
         what = f"PSet « {requirement} » absent ou incomplet (paramètre manquant, vide ou de type incorrect)."
     lines = [marking] if marking else []
@@ -139,21 +146,52 @@ def _markup_file(guid: str, viewpoint_guid: str, anomaly: dict, index: int, stat
     return _xml(root)
 
 
-def _viewpoint_file(viewpoint_guid: str, guids: list, color: bool) -> bytes:
-    """Point de vue sans caméra (facultative en BCF 2.1) : les éléments
-    concernés sont sélectionnés et colorés, le reste du modèle reste
-    visible ; l'outil de destination cadre la sélection."""
+# Caméra des points de vue de conflits : placée en retrait et en surplomb
+# du point de conflit, tournée vers lui (coordonnées du projet, en mètres).
+CAMERA_OFFSET = (-4.0, -4.0, 3.0)
+CAMERA_FIELD_OF_VIEW = 60.0
+
+
+def _normalize(vector):
+    length = sum(c * c for c in vector) ** 0.5 or 1.0
+    return tuple(c / length for c in vector)
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _camera(parent, point) -> None:
+    eye = tuple(p + o for p, o in zip(point, CAMERA_OFFSET))
+    direction = _normalize(tuple(p - e for p, e in zip(point, eye)))
+    up = _normalize(_cross(_cross(direction, (0.0, 0.0, 1.0)), direction))
+    camera = _sub(parent, "PerspectiveCamera")
+    for tag, values in (("CameraViewPoint", eye), ("CameraDirection", direction), ("CameraUpVector", up)):
+        node = _sub(camera, tag)
+        for axis, value in zip("XYZ", values):
+            _sub(node, axis, f"{value:.6f}")
+    _sub(camera, "FieldOfView", f"{CAMERA_FIELD_OF_VIEW:g}")
+
+
+def _viewpoint_file(viewpoint_guid: str, guids: list, color: bool, related: list = (), point=None) -> bytes:
+    """Point de vue : les éléments concernés sont sélectionnés et colorés, le
+    reste du modèle reste visible. `related` : éléments d'un autre lot
+    (conflits), sélectionnés mais pas colorés. Avec `point` (conflit), une
+    caméra est placée face au point ; sinon pas de caméra (facultative en BCF
+    2.1) et l'outil de destination cadre la sélection."""
     root = ET.Element("VisualizationInfo", Guid=viewpoint_guid)
     components = _sub(root, "Components")
-    if guids:
+    if guids or related:
         selection = _sub(components, "Selection")
-        for guid in guids:
+        for guid in list(guids) + list(related):
             _sub(selection, "Component", IfcGuid=guid)
     _sub(components, "Visibility", DefaultVisibility="true")
     if guids and color:
         node = _sub(_sub(components, "Coloring"), "Color", Color=ANOMALY_COLOR)
         for guid in guids:
             _sub(node, "Component", IfcGuid=guid)
+    if point is not None and len(point) == 3:
+        _camera(root, tuple(float(v) for v in point))
     return _xml(root)
 
 
@@ -201,9 +239,11 @@ def write_bcf(path: str, anomalies: Iterable[dict], author: str = "Checkers",
             viewpoint = stable_guid(guid, "viewpoint")
             zf.writestr(f"{guid}/markup.bcf", _markup_file(
                 guid, viewpoint, anomaly, index, OPEN, author, date, lot, phase, referentials, marking, labels, None))
-            zf.writestr(f"{guid}/viewpoint.bcfv", _viewpoint_file(viewpoint, guids, color=True))
+            related = clean(anomaly.get("related_guids"))
+            zf.writestr(f"{guid}/viewpoint.bcfv", _viewpoint_file(viewpoint, guids, color=True, related=related,
+                                                                   point=anomaly.get("point")))
             stats["topics"] += 1
-            stats["components"] += len(guids)
+            stats["components"] += len(guids) + len(related)
         for group in resolved:
             guid = topic_guid(project_key, lot, group)
             if guid in open_guids:

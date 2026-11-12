@@ -151,17 +151,31 @@ def _fiche(workbook, result: RecetteResult):
         sheet.line(["Relevé terrain", r["checks"], _pct(r["pass_rate"]), _groups(result, "Terrain"),
                     result.survey_verdict or INCONCLUSIVE],
                    fills={5: FILL[result.survey_verdict or INCONCLUSIVE]}, formats=PCT)
+    if result.federation is not None:
+        checks = result.federation["checks"]
+        done = [c for c in checks if c["status"] != "erreur"]
+        rate = sum(1 for c in done if c["status"] == "ok") / len(done) if done else None
+        sheet.line([f"Cohérence entre lots ({len(result.federation['lots'])} lot(s))", len(done), _pct(rate),
+                    _groups(result, "Cohérence"), result.federation_verdict],
+                   fills={5: FILL[result.federation_verdict]}, formats=PCT)
+    if result.clashes is not None:
+        rules = result.clashes["rules"]
+        done = [r for r in rules if r["status"] != "erreur"]
+        rate = sum(1 for r in done if r["status"] == "ok") / len(done) if done else None
+        sheet.line([f"Conflits géométriques ({result.clashes['total']} conflit(s))", len(done), _pct(rate),
+                    _groups(result, "Conflit"), result.clash_verdict],
+                   fills={5: FILL[result.clash_verdict]}, formats=PCT)
     sheet.row += 1
     sheet.banner(f"VERDICT : {result.verdict.upper()}", Font(size=13, bold=True), FILL[result.verdict],
                  height=24, align=WRAP_CENTER)
-    sheet.banner("Vérifications : nombre de contrôles pour la structure, de couples élément × spécification pour "
-                 "l'IDS, d'éléments pour les règles Excel, d'équipements vérifiés sur site pour le relevé terrain.",
-                 NOTE, height=26)
+    sheet.banner("Vérifications : nombre de contrôles pour la structure et la cohérence entre lots, de couples "
+                 "élément × spécification pour l'IDS, d'éléments pour les règles Excel, d'équipements vérifiés sur "
+                 "site pour le relevé terrain, de règles pour les conflits géométriques.", NOTE, height=38)
     sheet.banner(f"Seuils IDS, règles Excel et relevé terrain : ≥ {s.threshold_ok:.0%} validé ; "
                  f"≥ {s.threshold_reserve:.0%} validé avec réserves ; rejeté en dessous. Une spécification IDS "
-                 f"obligatoire sans aucun élément concerné entraîne le rejet. Structure : un constat bloquant "
-                 f"entraîne le rejet, un constat majeur ou un contrôle non exécuté des réserves. Le verdict global "
-                 f"est le plus sévère.", NOTE, height=50)
+                 f"obligatoire sans aucun élément concerné entraîne le rejet. Structure, cohérence entre lots et "
+                 f"conflits : un constat bloquant entraîne le rejet, un constat majeur ou un contrôle non exécuté "
+                 f"des réserves. Le verdict global est le plus sévère.", NOTE, height=50)
     for warning in result.warnings:
         sheet.banner(f"⚠ {warning}", Font(size=10, color="9C5700"))
 
@@ -200,6 +214,8 @@ def _fiche(workbook, result: RecetteResult):
                         ("Journal précédent", previous_journal)):
         if info:
             sheet.field(f"{label} (SHA-256)", f"{info.get('name', '')} – {info.get('sha256', '')}")
+    for lot in result.lots:
+        sheet.field(f"Lot « {lot['name']} » (SHA-256)", f"{lot['file_name']} – {lot['sha256']}")
     sheet.banner("L'analyse porte sur le modèle ouvert dans Bonsai au moment de la recette ; l'empreinte est "
                  "celle du fichier enregistré sur disque. Enregistrer la maquette avant la recette pour qu'ils "
                  "coïncident.", NOTE)
@@ -296,6 +312,46 @@ def _survey_sheet(workbook, result: RecetteResult):
         sheet.banner("Aucun écart entre la maquette et le relevé.")
 
 
+def _federation_sheet(workbook, result: RecetteResult):
+    f = result.federation
+    sheet = _Sheet(workbook, "Cohérence", [24, 8, 30, 12, 14, 70], result.settings.marking)
+    sheet.banner("Lots comparés à la maquette ouverte : " + "; ".join(
+        f"« {lot['name']} » ({lot['schema']}, projet « {lot['project'] or '—'} »)" for lot in f["lots"]),
+        Font(bold=True), height=30)
+    sheet.header(["Lot", "Code", "Contrôle", "Gravité", "Statut", "Constat"])
+    status = {"ok": ("Cohérent", FILL[VALIDATED]), "ko": ("Écart", FILL[REJECTED]),
+              "erreur": ("Non exécuté", FILL[INCONCLUSIVE])}
+    for c in f["checks"]:
+        label, fill = status[c["status"]]
+        sheet.line([c["lot"], c["code"], c["title"], c["severity"], label, c["message"]], fills={5: fill})
+    sheet.banner("Tolérances : 1 cm en position et en altitude, 0,01° en orientation. Les entités spatiales (site, "
+                 "bâtiment, étages) peuvent partager leur GlobalId entre lots ; les éléments, non.", NOTE)
+    sheet.ws.freeze_panes = "A2"
+
+
+def _clash_sheet(workbook, result: RecetteResult):
+    c = result.clashes
+    sheet = _Sheet(workbook, "Conflits", [30, 16, 20, 24, 26, 16, 20, 24, 26, 18, 10, 24],
+                   result.settings.marking)
+    sheet.section("Règles de conflits", numbered=False)
+    sheet.header(["Règle", "Gravité", "Sélection (cette maquette)", "Sélection (autre lot)", "Résultat"])
+    status_fill = {"ok": FILL[VALIDATED], "ko": FILL[REJECTED], "erreur": FILL[INCONCLUSIVE]}
+    for rule in c["rules"]:
+        sheet.line([rule["label"], rule["severity"], rule["selector_a"] or "tous les éléments",
+                    rule["selector_b"] or "tous les éléments", rule["message"]], fills={5: status_fill[rule["status"]]})
+    sheet.section("Détail des conflits", numbered=False)
+    sheet.header(["Règle", "Niveau / partie", "Classe IFC", "GlobalId", "Nom", "Autre lot", "Classe IFC (autre)",
+                  "GlobalId (autre)", "Nom (autre)", "Type", "Distance (m)", "Point (x ; y ; z)"])
+    for d in c["details"]:
+        sheet.line([d["rule"], d["level"], d["a_class"], d["a_guid"], d["a_name"], d["lot"], d["b_class"],
+                    d["b_guid"], d["b_name"], d["type"], round(d["distance"], 4),
+                    " ; ".join(f"{v:.3f}" for v in d["point"])])
+    if not c["details"]:
+        sheet.banner("Aucun conflit.")
+    if c["truncated"]:
+        sheet.banner("Liste tronquée (les compteurs restent exacts).", NOTE)
+
+
 def write_report(result: RecetteResult, path: str) -> None:
     workbook = Workbook()
     _fiche(workbook, result)
@@ -309,5 +365,9 @@ def write_report(result: RecetteResult, path: str) -> None:
         _pset_details(workbook, result)
     if result.survey_result is not None:
         _survey_sheet(workbook, result)
+    if result.federation is not None:
+        _federation_sheet(workbook, result)
+    if result.clashes is not None:
+        _clash_sheet(workbook, result)
     neutralize_formulas(workbook)
     workbook.save(path)
