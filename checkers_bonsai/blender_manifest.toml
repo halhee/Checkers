@@ -1,0 +1,26 @@
+schema_version = "1.0.0"
+
+id = "checkers_bonsai"
+version = "0.7.0"
+name = "Checkers - recette IFC"
+tagline = "Recette IFC hors ligne : IDS, PSet, terrain, suivi, BCF"
+maintainer = "Checkers <khchiche.zakaria@gmail.com>"
+type = "add-on"
+website = "https://github.com/halhee/Checkers"
+
+tags = ["Import-Export", "Object"]
+
+# Bonsai fournit ifcopenshell, ifctester et openpyxl : aucune dépendance
+# n'est embarquée.
+blender_version_min = "4.2.0"
+
+license = ["SPDX:MIT"]
+
+# Aucune permission « network » : l'extension ne fait aucun accès réseau
+# (fonctionnement hors ligne garanti, voir tests/test_extension.py).
+# Blender limite chaque justification à 64 caractères, sans ponctuation finale.
+[permissions]
+files = "Lecture des référentiels, écriture des livrables de recette"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc"]

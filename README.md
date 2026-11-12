@@ -1,183 +1,279 @@
-# Checkers - Validation IFC
+# Checkers – recette de maquettes IFC dans Bonsai
 
-Checkers est une application web permettant de valider des fichiers IFC (Industry Foundation Classes) en vérifiant la présence et la conformité des Property Sets (PSet) et des paramètres requis.
+Extension Blender pour [Bonsai](https://bonsaibim.org/) qui fait la recette de la maquette IFC ouverte, de la réception à l'exploitation :
 
-<div align="center">
-  <img src="static/Sanstitre.png" alt="Checkers Logo" width="600">
-</div>
+- **contrôles** : structure du modèle, exigences **IDS** (buildingSMART), **PSet requis** (fichier Excel), **relevé terrain** ;
+- **coordination entre lots** : cohérence de référence avec les maquettes des autres lots (origine, étages, géoréférencement…) et **conflits géométriques** avec IfcClash, selon des règles réglables ;
+- **verdict** (validé, avec réserves, rejeté) selon des seuils réglables, et **dérogations** motivées pour les anomalies admises ;
+- anomalies **sélectionnables dans la vue 3D**, coloration conforme / non conforme ;
+- **suivi entre livraisons** : anomalies levées, persistantes et nouvelles depuis la recette précédente ;
+- **fiche de recette Excel** à signer, avec traçabilité (empreintes SHA-256) ;
+- **export BCF 2.1** des anomalies pour la maîtrise d'œuvre et les entreprises ;
+- **inventaire d'exploitation** et **fiche de relevé terrain** : équipements et locaux de la maquette ;
+- **tableau de suivi** : état de tous les lots à partir des journaux de recette.
 
-## Fonctionnalités
-
-- Upload de plusieurs fichiers IFC (un par lot/discipline -- Architecture, Structure, CVC...), analysés ensemble et comparés
-- Validation automatique des PSet et paramètres (fichier Excel) **et/ou** contrôle d'un fichier **IDS** (Information Delivery Specification, standard buildingSMART -- voir `ids_check.py`)
-- Dashboard interactif avec statistiques en temps réel
-- Graphique en donut pour la visualisation des résultats
-- Bilan carbone basé sur les matériaux réels du modèle IFC (voir `carbon.py`), avec indicateur de fiabilité (mesuré / estimé / non calculable)
-- Préconisations générées par 3 agents experts (carbone, qualité des données, métier/risques projet) + une synthèse croisée, en option (voir `agents/`)
-- Visionneuse 3D du modèle IFC intégrée (onglet "Maquette 3D")
-- Géolocalisation du site sur une carte (onglet "Géoréférencement", à partir de `IfcSite.RefLatitude`/`RefLongitude`)
-- Génération de rapports détaillés au format Excel, avec une **Fiche de Recette** prête à signer (verdict par lot, anomalies ouvertes, zone de signature)
-- **Suivi des anomalies et historique des analyses** (voir `history.py`) : chaque analyse est enregistrée, comparable à une analyse précédente pour voir ce qui a été corrigé/est nouveau/persiste
-- Support des fichiers volumineux (jusqu'à 300 Mo)
-- Interface utilisateur moderne et intuitive
-
-## Analyse multilot
-
-Un projet réel a un modèle par lot (discipline), pas un seul IFC. Checkers accepte plusieurs fichiers IFC en une seule analyse -- chacun nommé librement à l'upload (ex. "Architecture", "Structure", "CVC"). Chaque lot garde ses propres statistiques (visibles dans l'onglet Excel "Comparatif Lots" et le tableau du dashboard) tout en alimentant des totaux combinés (Résumé, bilan carbone global). **Pas de détection de clash spatial entre lots** (aucune intersection de géométrie vérifiée) -- uniquement des statistiques agrégées et comparées côte à côte ; les préconisations par agents IA restent volontairement lot-agnostiques (elles raisonnent sur les totaux combinés).
-
-### Excel multi-corps d'état
-
-Par défaut, tous les lots sont validés contre le **même** fichier Excel de paramètres requis. Pour donner des règles différentes par discipline dans **un seul** fichier Excel (voir `corps_etat.py`), on raisonne par PSet -- pas par corps d'état : mêmes onglets qu'un fichier à un seul jeu de règles (`Element_Types` + un onglet par PSet), avec juste une colonne **`Corps_Etat`** en plus sur chaque ligne. Une cellule vide = la ligne s'applique à tous les corps d'état ; plusieurs codes séparés par une virgule (`ARC, STR`) = une règle partagée entre eux, sans avoir à la dupliquer. Un onglet **`Corps_Etat`** (colonnes `Code`, `Nom`) déclare les disciplines disponibles, ex. `ARC | Architecture`, `STR | Structure` -- utilisé pour faire correspondre le nom du lot saisi à l'upload. Un exemple complet (`exemple_parametres_corps_etat.xlsx`) est disponible à la racine du projet.
-
-À chaque analyse, le nom du lot saisi à l'upload est automatiquement associé à un corps d'état -- correspondance exacte, puis floue (`rapidfuzz`), puis un agent IA en dernier recours si c'est ambigu (choix strictement limité aux corps d'état déclarés, jamais d'invention). Si rien ne correspond avec confiance, le lot est quand même inclus dans le bilan carbone (sur tous ses éléments) mais **sans contrôle PSet**, avec un avertissement clair dans le rapport plutôt qu'un blocage. Sans onglet `Corps_Etat` dans le fichier, comportement inchangé (un seul jeu de règles partagé).
-
-Dès que le fichier Excel choisi déclare un onglet `Corps_Etat`, un petit sélecteur apparaît à côté de chaque lot pour choisir explicitement son corps d'état (peuplé via la route `/corps_etat_registry`, appelée automatiquement au choix du fichier). Laissé sur "Auto" (par défaut), le pipeline de correspondance automatique ci-dessus s'applique comme d'habitude ; un choix explicite le court-circuite entièrement pour ce lot (visible dans le rapport comme "... (choix manuel)").
-
-## Contrôle IDS (Information Delivery Specification)
-
-L'IDS est le format ouvert buildingSMART pour exprimer ce qu'un modèle IFC doit contenir (classes, PSet, propriétés, attributs, valeurs). C'est l'équivalent normalisé de l'Excel de règles : on peut fournir **l'un, l'autre, ou les deux** (au moins un). Le contrôle s'appuie sur `ifctester`, le validateur de référence d'IfcOpenShell.
-
-- Un seul fichier IDS, partagé par tous les lots (comme l'Excel). Un exemple (`exemple_ids.ids`) est fourni à la racine.
-- **IDS seul** : les lots passent par le chemin « bilan carbone + IDS » (aucun contrôle PSet Excel) ; le verdict de recette vient de la conformité IDS. **Excel + IDS** : le verdict d'un lot est le plus sévère des deux.
-- Les spécifications dont la version IFC (`ifcVersion`) ne vise pas le modèle sont **ignorées** (comportement normatif), pas comptées en échec.
-- Les non-conformités IDS sont des anomalies comme les autres (regroupées par lot/étage/classe IFC/spécification, libellé `IDS : <nom>`) : elles alimentent l'historique, la comparaison avant/après, la Fiche de Recette et les agents IA.
-- Résultats : section « Conformité IDS » du dashboard, colonne dans le tableau des lots, et onglet Excel **IDS** (synthèse par spécification + détail élément par élément, plafonné à 5 000 lignes par lot ; les compteurs restent exacts).
-
-Le fichier IDS est traité comme **non fiable** (il vient souvent d'un tiers) : refus de toute déclaration `DOCTYPE`/`ENTITY` (XXE, expansion d'entités), UTF-8 obligatoire, 10 Mo maximum, validation XSD stricte, rejet des motifs regex à quantificateurs imbriqués ou trop longs (heuristique anti-ReDoS : elle écarte la forme classique du blocage mais ne prétend pas être exhaustive).
-
-**Version** : `ifctester` doit rester alignée sur `ifcopenshell` (0.8.5 ↔ 0.8.5) ; la 0.9.x appelle des méthodes absentes d'IfcOpenShell 0.8.x.
-
-## Recette fonctionnelle, anomalies et historique
-
-Chaque analyse génère, en plus des onglets existants, un onglet Excel **"Fiche de Recette"** : verdict par lot (Validé / Validé avec réserves / Rejeté, selon le taux de validité -- seuils indicatifs réglables dans `Checkers.py::VERDICT_THRESHOLD_OK`/`VERDICT_THRESHOLD_RESERVE`), la liste des anomalies ouvertes, et une zone de signature (testeur/date/visa) -- le document attendu à l'issue d'une recette, prêt à imprimer ou transmettre tel quel.
-
-Une **anomalie** est une non-conformité agrégée par (lot, étage, classe IFC, PSet) -- pas par élément individuel : à l'échelle réelle (des centaines d'éléments concernés par une même règle manquante), énumérer chaque élément rend le suivi illisible ; le détail reste disponible dans l'onglet "Détails" pour qui veut descendre au niveau de l'élément.
-
-Chaque analyse est **persistée** (SQLite, `history.py`, fichier local `data/checkers_history.db` -- jamais commité, voir `.gitignore`) : date, repère (saisi à l'upload ou nom du fichier Excel par défaut), taux de validité, nombre d'anomalies, empreinte carbone. Le dashboard affiche cet historique en permanence (section "Historique des analyses", visible même avant toute analyse dans la session en cours) avec une courbe de tendance (taux de validité / nombre d'anomalies dans le temps) dès que deux analyses ou plus existent.
-
-Deux analyses peuvent être **comparées** (sélecteurs "Avant"/"Après", ou route `GET /compare/<id_avant>/<id_après>`) : la comparaison distingue les anomalies **corrigées** (présentes avant, absentes après), **nouvelles** (absentes avant, présentes après -- ex. régression) et **persistantes** (dans les deux, avec le nombre d'éléments concernés de chaque côté pour voir une amélioration partielle). Typiquement utilisé entre deux livraisons successives d'une même maquette par un corps d'état, après correction des anomalies signalées.
-
-## Bilan carbone
-
-Le matériau de chaque élément est lu en priorité dans les données du fichier IFC lui-même (associations matériau, y compris les parois multicouches). Le mapping par classe IFC (ex. "un mur est en béton") n'est utilisé qu'en dernier recours, quand le fichier ne porte aucune information matériau, et c'est indiqué dans le rapport. Les facteurs d'émission utilisés (`carbon.py::MATERIAL_CARBON_FACTORS`) sont des **valeurs indicatives** (ordres de grandeur), pas une extraction d'une base FDES/INIES réelle -- éditez cette table si vous disposez de données réelles. Chaque élément est classé "mesuré" (quantité issue du modèle), "estimé" (calculée depuis la géométrie) ou "non calculable" (jamais remplacé par une valeur inventée) ; le rapport Excel et le dashboard affichent la répartition.
-
-## Préconisations par agents IA
-
-Optionnel, désactivé par défaut dans l'image Docker (`ENABLE_AI_RECOMMENDATIONS=false`). Basé sur CrewAI, 3 experts qui se prononcent chacun sur une facette distincte des mêmes faits déjà calculés, puis une synthèse qui croise leurs constats :
-- **Expert carbone** : priorise des pistes de réduction à partir de scénarios de substitution déjà chiffrés (`carbon.py::compute_substitution_scenarios` -- quantité réelle × facteur de la table, comparaison d'ordre de grandeur, pas une préconisation d'ingénierie prête à l'emploi).
-- **Expert qualité des données** : PSet/paramètres manquants + fiabilité du bilan carbone lui-même (% mesuré/estimé/non calculable).
-- **Expert métier / risques projet** : croise les deux jeux de faits précédents pour prioriser ce qui compte le plus sur le terrain (`agents/recommendations.py::compute_business_priorities` -- types d'éléments à la fois mal renseignés et carbonés).
-
-Un modèle local (Ollama) tourne en priorité pour chaque étape, avec escalade vers un modèle cloud (Anthropic) plafonnée en dépense si le résultat local échoue sa vérification. Les agents ne font qu'expliquer/prioriser les chiffres déjà calculés par `Checkers.py`/`carbon.py` -- ils ne recalculent et n'inventent jamais de chiffre. Les 4 étapes tournent séquentiellement (mesuré empiriquement que le parallélisme n'apporte rien avec Ollama, qui traite les requêtes une par une côté serveur).
-
-Pour l'activer : copier `.env.example` en `.env`, s'assurer qu'un service Ollama est joignable (`OLLAMA_BASE_URL`, `ollama pull llama3.2:3b`), et éventuellement fournir `CLOUD_ANTHROPIC_API_KEY` pour l'escalade cloud (plafonnée par `CLOUD_BUDGET_EUR`, 10 € par défaut, suivi de façon persistante dans `data/.cloud_spend.json`).
-
-En Docker, Ollama ne tourne pas dans le conteneur Checkers : `OLLAMA_BASE_URL` doit pointer vers un service Ollama accessible depuis le conteneur (ex. `http://host.docker.internal:11434`, ou un service `ollama` dédié dans `docker-compose.yml`).
-
-Sur Vercel (serverless), CrewAI + Ollama local ne fonctionnent pas (pas de process persistant, pas d'accès à un Ollama local) -- `ENABLE_AI_RECOMMENDATIONS=false` est configuré par défaut dans `vercel.json`. Le bilan carbone corrigé, lui, fonctionne normalement sur Vercel (pur Python, sans dépendance lourde supplémentaire).
-
-## Prérequis
-
-- Docker
-- Docker Compose
+L'extension fonctionne **entièrement hors ligne** : aucun accès réseau, aucune dépendance à installer (Bonsai fournit ifcopenshell, ifctester, IfcClash et openpyxl).
 
 ## Installation
 
-1. Clonez le dépôt :
-```bash
-git clone https://github.com/halhee/Checkers.git
-cd Checkers
-```
+1. Construire l'archive : `python build.py`, qui produit `dist/checkers_bonsai-<version>.zip`.
+2. Dans Blender : **Édition → Préférences → Extensions → menu ⌄ → Installer depuis le disque…**, puis choisir le `.zip`.
+3. Vérifier que **Bonsai** et **Checkers - recette IFC** sont activés.
+4. Dans le panneau Checkers, section **Installation**, cliquer sur **Vérifier l'installation** : chaque bibliothèque attendue et les IDS d'exemple sont contrôlés sur le poste.
 
-2. Démarrez l'application avec Docker Compose :
-```bash
-docker-compose up --build
-```
-
-L'application sera accessible à l'adresse : http://localhost:8080
-
-## Structure du Projet
-
-```
-.
-├── Checkers.py           # Application Flask principale
-├── carbon.py             # Bilan carbone (matériaux réels, facteurs, onglet Excel)
-├── site_location.py      # Géoréférencement du site (IfcSite.RefLatitude/RefLongitude)
-├── corps_etat.py         # Registre des corps d'état et correspondance lot -> discipline
-├── history.py            # Historique persistant des analyses + comparaison (anomalies)
-├── ids_check.py          # Contrôle IDS (ifctester) : chargement sécurisé, validation par lot, onglet Excel
-├── excel_safety.py       # Neutralisation de l'injection de formule dans les rapports Excel
-├── agents/               # Préconisations par agents IA (CrewAI, optionnel)
-├── Dockerfile           # Configuration Docker
-├── docker-compose.yml   # Configuration Docker Compose
-├── requirements.txt     # Dépendances Python
-├── .env.example         # Configuration des agents IA (à copier en .env)
-├── static/             # Fichiers statiques (CSS, images)
-├── templates/          # Templates HTML
-├── uploads/           # Dossier pour les fichiers uploadés
-├── temp/              # Dossier pour les fichiers temporaires
-└── data/              # Budget cloud des agents IA + historique des analyses (SQLite)
-```
+Blender 4.2 minimum ; développé pour Blender 5.2 / Bonsai 0.9.
 
 ## Utilisation
 
-1. Accédez à l'interface web via http://localhost:8080
-2. Ajoutez un ou plusieurs lots (nom + fichier IFC), et un fichier Excel de paramètres requis partagé
-3. L'application analysera automatiquement tous les lots et affichera :
-   - Les statistiques globales et le comparatif par lot
-   - La répartition des éléments par étage
-   - Les PSet et paramètres manquants
-4. Téléchargez le rapport détaillé au format Excel
+Dans la vue 3D, ouvrir la barre latérale (`N`) et l'onglet **Checkers**. Les sections « Suivi de projet » et « Installation » sont disponibles sans maquette ; les autres demandent un projet IFC ouvert dans Bonsai.
 
-## Technologies Utilisées
+1. **Contrôles**
+   - **Contrôler la structure du modèle** : coché par défaut, sans référentiel.
+   - **IDS** : les exigences du cahier des charges BIM.
+   - **Règles Excel** : facultatif. Si le fichier déclare des corps d'état, choisir celui du lot.
+   - **Relevé terrain** : facultatif, la fiche de relevé remplie sur site (voir plus bas).
+   - **Coordination entre lots** : facultatif, les maquettes des autres lots et les règles de conflits (voir plus bas).
+   - Le bouton à droite des champs IDS et Règles Excel charge un exemple fourni avec l'extension.
+2. **Recette**
+   - Renseigner le lot, la phase (suggestions ESQ à DOE, exploitation), la personne qui recette et une mention de confidentialité facultative.
+   - **Recette précédente** : le journal `.json` de la livraison précédente, pour suivre l'évolution.
+   - **Dérogations** : facultatif, le fichier des anomalies admises (voir plus bas). Créé au premier « Admettre » s'il n'est pas choisi.
+   - Ajuster si besoin les seuils de verdict : 98 % et 90 % par défaut.
+   - Cliquer sur **Lancer la recette**.
+3. **Résultats**
+   - Verdict, résultat de chaque contrôle, évolution et avertissements.
+   - Liste des anomalies : le premier bouton de chaque ligne sélectionne et cadre les éléments concernés, le second admet l'anomalie par dérogation.
+   - Pour un conflit : la vue se centre sur le point de conflit et l'élément de l'autre lot s'affiche en filaire ; les flèches passent d'un conflit à l'autre.
+   - **Colorer** : rouge = au moins une anomalie, vert = contrôlé sans anomalie. **Réinitialiser** restaure l'affichage d'origine.
+4. **Livrables de recette**
+   - **Fiche de recette (Excel) + journal** : la fiche à imprimer et signer, les onglets de détail, et le journal `.json` de même nom, à conserver pour la livraison suivante.
+   - **Anomalies (BCF)** : un sujet par anomalie, avec les éléments sélectionnés. Le fichier s'ouvre dans BIMcollab, Solibri, Revit/Navisworks (plugin) ou dans Bonsai.
+5. **Exploitation et terrain**
+   - **Inventaire d'exploitation (Excel)** et **Fiche de relevé terrain (Excel)** : ne demandent pas de recette, seulement une maquette ouverte.
+6. **Suivi de projet**
+   - **Tableau de suivi (Excel)** : consolide les journaux de recette d'un dossier.
 
-- Python 3.12
-- Flask 3.1
-- IfcOpenShell 0.8
-- Pandas 3.0
-- OpenPyXL 3.1
-- Gunicorn 26
-- CrewAI (préconisations IA, optionnel)
-- Docker
-- Bootstrap
-- Chart.js
+Enregistrer la maquette avant la recette : l'empreinte notée sur la fiche est celle du fichier sur disque. Si Bonsai signale des modifications non enregistrées, la fiche le mentionne.
+
+## Contrôles
+
+### Structure du modèle
+
+| Code | Contrôle | Gravité |
+|---|---|---|
+| S01 | Projet unique | Bloquant |
+| S02 | Identifiants (GlobalId) uniques | Bloquant pour des objets ou des types, majeur pour des jeux de propriétés ou des relations seuls |
+| S03 | Unité de longueur déclarée | Majeur |
+| S04 | Site, bâtiment ou ouvrage présent | Majeur |
+| S05 | Bâtiments découpés en étages | Majeur |
+| S06 | Éléments rattachés à la structure spatiale | Majeur |
+| S07 | Objets génériques (`IfcBuildingElementProxy`) | Mineur, majeur au-delà de 10 % des éléments |
+| S08 | Étages nommés, sans doublon dans un bâtiment | Mineur |
+| S09 | Éléments nommés | Mineur |
+| S10 | Éléments avec géométrie | Mineur |
+| S11 | Géoréférencement renseigné | Mineur |
+
+Un constat bloquant entraîne le rejet ; un constat majeur, ou un contrôle qui n'a pas pu s'exécuter, des réserves ; un constat mineur est signalé sans effet sur le verdict. Ces gravités sont des choix par défaut, définis en tête de `core/structure.py`.
+
+### IDS
+
+Les fichiers IDS sont contrôlés avant lecture :
+- taille limitée et encodage UTF-8 obligatoire ;
+- DOCTYPE et ENTITY refusés ;
+- motifs regex dangereux refusés ;
+- validation par le schéma XSD officiel.
+
+Les spécifications qui visent une autre version IFC que celle de la maquette sont ignorées. Une spécification obligatoire qu'aucun élément ne concerne apparaît comme une anomalie portant sur la maquette entière. Le libellé des exigences est celui d'ifctester, en anglais.
+
+Exemples fournis dans `checkers_bonsai/examples/`, à adapter au projet :
+- `exploitation_maintenance.ids` : équipements (repère, désignation, fabricant, modèle, n° de série, fin de garantie, classification) et locaux (numéro, désignation) ;
+- `conception_minimale.ids` : étages nommés, locaux identifiés, murs et dalles porteurs, portes coupe-feu.
+
+### Règles Excel
+
+Exemple : `checkers_bonsai/examples/regles_exemple.xlsx`.
+
+- Onglet `Element_Types` : colonne `IFC_Class`, les classes contrôlées, sous-classes comprises.
+- Un onglet par PSet : colonnes `IFC_Class`, `Parametre`, `Type` (String, Int, Float, Number ou Bool).
+- Colonne facultative `Corps_Etat` : vide = tous les corps d'état ; `ARC, STR` = règle partagée. L'onglet `Corps_Etat` (`Code`, `Nom`) déclare les choix proposés dans le panneau.
+
+Un paramètre absent, vide ou de type incorrect est une non-conformité. Le type est vérifié strictement : un nombre saisi comme texte (« 2.5 ») n'est pas un nombre, un texte n'est pas un booléen. Une règle qui porte sur une classe absente de `Element_Types` ne serait jamais appliquée : elle est signalée par un avertissement.
+
+### Relevé terrain
+
+Pour confronter la maquette à ce qui existe réellement sur site :
+
+1. **Fiche de relevé terrain (Excel)** produit la liste des équipements de la maquette, par niveau et par local, avec des colonnes à remplir sur site : *Présent sur site*, *Repère relevé*, *N° de série relevé*, *Observation*. La fiche s'imprime ou se remplit sur tablette.
+2. Sur site, un équipement trouvé mais absent de la liste s'ajoute en bas, sans GlobalId.
+3. De retour, la fiche remplie se choisit dans **Contrôles → Relevé terrain**, puis on lance la recette.
+
+Les écarts deviennent des anomalies de source « Terrain » : équipement absent sur site, repère différent, n° de série différent, équipement non modélisé. Elles se sélectionnent dans la vue 3D, figurent sur la fiche de recette et dans le BCF, et sont suivies d'une livraison à l'autre.
+
+La comparaison se fait avec les valeurs actuelles de la maquette. Un équipement laissé vide dans la fiche est compté « non vérifié », pas « conforme ».
+
+### Coordination entre lots
+
+Dans la section **Coordination entre lots**, ajouter avec **+** les maquettes IFC des autres lots (structure, CVC, plomberie…), chacune avec un nom court. Ces fichiers sont seulement lus.
+
+**Cohérence de référence** (case cochée par défaut) : la maquette ouverte est comparée à chaque lot, sans géométrie.
+
+| Code | Contrôle | Gravité |
+|---|---|---|
+| C01 | Même schéma IFC | Majeur |
+| C02 | Même projet (GlobalId de l'`IfcProject`) | Majeur ; mineur si seul le GlobalId diffère |
+| C03 | Même unité de longueur | Mineur |
+| C04 | Même point d'origine et même orientation du bâtiment (1 cm, 0,01°) | Majeur |
+| C05 | Étages de même nom à la même altitude (1 cm) | Majeur, par étage |
+| C06 | Étages de même nom des deux côtés | Mineur, par étage |
+| C07 | Même géoréférencement (`IfcMapConversion`, ou en IFC2X3 les jeux de propriétés `ePSet_MapConversion` et `ePSet_ProjectedCRS` du projet) | Majeur |
+| C08 | Même nord géographique | Majeur |
+| C09 | Aucun élément de même GlobalId dans les deux lots | Bloquant, par élément |
+
+Un C04 ou un C05 en échec signifie que les maquettes ne se superposent pas : la fédération est fausse et les conflits géométriques entre ces lots n'ont pas de sens. La recette l'indique alors dans ses avertissements. Les entités spatiales (site, bâtiment, étages) peuvent être partagées ; un élément physique ne doit appartenir qu'à un lot.
+
+**Conflits géométriques** (case à cocher, avec IfcClash fourni par Bonsai) : chaque règle confronte une sélection de la maquette ouverte (A) à une sélection d'un lot ou de la maquette ouverte elle-même (B) :
+
+- **Sélections** : requêtes IfcOpenShell, par exemple `IfcDuctSegment, IfcPipeSegment` ou `IfcBeam, IfcColumn, IfcSlab`. Vide : tous les éléments physiques, hors réservations.
+- **Mode** : *intersection* (pénétration au-delà de la tolérance), *collision* (contact compris), *dégagement* (distance minimale exigée, par exemple pour l'accès maintenance).
+- **Distance** et **gravité** propres à chaque règle.
+- **Une règle par lot** crée une règle d'intersection à 1 cm avec chaque lot.
+
+Chaque conflit devient une anomalie de source « Conflit », regroupée par étage, classe et règle. La sélection 3D porte sur l'élément de la maquette ouverte ; dans le BCF, l'élément de l'autre lot est aussi sélectionné (sans couleur) et une caméra est placée sur le point de conflit. L'onglet « Conflits » de la fiche liste chaque paire avec sa distance et ses coordonnées.
+
+Gravité : un conflit bloquant rejette la maquette, un conflit majeur ou une règle qui n'a pas pu s'exécuter (sélection vide, géométrie non calculable) donne des réserves, un conflit mineur est seulement signalé.
+
+**Voir un conflit dans la vue 3D** : le bouton de sélection d'une anomalie « Conflit » sélectionne les éléments de la maquette ouverte, place le curseur 3D et un repère sur le point de conflit, centre la vue dessus et affiche en filaire, par-dessus la maquette, les éléments de l'autre lot (calculés à partir de son fichier IFC). Les flèches **◀ ▶** passent d'un conflit à l'autre, un par un. Ces objets d'affichage sont temporaires : **Effacer** les retire, et ils ne sont jamais enregistrés dans le fichier `.blend`. Si Bonsai a décalé la scène (maquettes aux grandes coordonnées), le point et les éléments suivent ce décalage.
+
+Le suivi d'un conflit d'une recette à l'autre (journal, sujets BCF, dérogations) ne dépend pas de la distance de la règle : ajuster une tolérance ne fait pas passer les conflits pour nouveaux. Changer de mode, si.
+
+### Dérogations
+
+Certaines anomalies sont voulues ou acceptées : une gaine dans sa réservation, un écart validé par la maîtrise d'ouvrage, un ouvrage existant conservé. Plutôt que de les retrouver à chaque recette, on les **admet** :
+
+1. Dans la liste des anomalies, bouton **Admettre** de la ligne.
+2. Saisir le **motif** (obligatoire), choisir la portée : tous les éléments de l'anomalie, ou seulement ceux sélectionnés dans la vue 3D ; cocher *Valable pour tous les lots* si besoin.
+3. Le verdict, les taux et la coloration sont recalculés aussitôt, sans relancer les contrôles.
+
+Une dérogation porte sur des éléments précis (GlobalId) pour une exigence donnée : un nouvel élément présentant le même défaut reste une anomalie. Elle est enregistrée dans le **fichier des dérogations** (`.json`, par défaut `<maquette>.derogations.json` à côté de la maquette), avec le motif, la personne qui recette et la date, et vaut pour les recettes suivantes. **Retirer** (liste « Admises par dérogation ») rouvre l'anomalie.
+
+Effets :
+- les anomalies admises sortent du verdict : un élément dont toutes les anomalies d'un contrôle sont admises compte comme conforme dans le taux de ce contrôle ; pour la structure, la cohérence et les conflits, le verdict est recalculé sans elles ;
+- la fiche les liste dans l'onglet **Dérogations**, avec le motif, ainsi que les dérogations **sans objet** (défaut corrigé, élément supprimé) qui peuvent être retirées du fichier ; l'empreinte du fichier figure dans la traçabilité ;
+- le BCF les transmet comme **sujets clos**, avec le motif en commentaire ;
+- le journal les garde à part : elles ne sont comptées ni comme levées ni comme nouvelles ; le tableau de suivi a une colonne « Anomalies admises ».
+
+### Verdict
+
+L'IDS, les règles Excel et le relevé terrain donnent chacun *validé* au-dessus du premier seuil, *validé avec réserves* au-dessus du second, *rejeté* en dessous. Une spécification IDS obligatoire sans aucun élément concerné entraîne le rejet. La cohérence entre lots et les conflits suivent leurs gravités (comme la structure). Le verdict global est le plus sévère des contrôles réalisés. Les anomalies admises par dérogation n'y entrent pas.
+
+Les anomalies sont regroupées par étage ou, en IFC 4.3, par partie d'ouvrage (`IfcFacilityPart`). Un élément placé dans un local est rattaché à l'étage du local.
+
+## Suivi
+
+### Entre deux livraisons
+
+Chaque fiche de recette est enregistrée avec un journal `.json`. À la livraison suivante, ce journal fourni comme **recette précédente** permet de comparer, élément par élément et exigence par exigence :
+
+- les anomalies **levées**, en distinguant celles qui disparaissent parce que l'élément a été supprimé ;
+- les anomalies **persistantes** ;
+- les anomalies **nouvelles** ;
+- les anomalies **non recontrôlées**, quand un contrôle de la recette précédente n'a pas été relancé : elles ne sont pas comptées comme levées ;
+- les anomalies **admises** depuis, par dérogation.
+
+La fiche reçoit une section et un onglet « Évolution », et l'empreinte du journal précédent figure dans la traçabilité. Un avertissement signale un référentiel, un lot ou un projet différent de la recette précédente, car la comparaison n'aurait alors pas le même sens.
+
+Dans le BCF, une anomalie garde le même identifiant de sujet d'une recette à l'autre : l'outil du destinataire met le sujet à jour au lieu de le dupliquer, et les anomalies entièrement levées lui arrivent comme sujets clos.
+
+### Sur tout le projet
+
+**Tableau de suivi (Excel)** lit tous les journaux d'un dossier, sous-dossiers compris, sans ouvrir aucune maquette :
+
+- **Synthèse** : une ligne par lot, avec la date, la phase et le verdict de sa dernière recette, le nombre d'anomalies ouvertes et l'écart avec la recette précédente ;
+- **Recettes** : l'historique complet, avec le verdict et le taux de chaque contrôle.
+
+Il suffit de ranger les journaux de recette dans un même dossier, par exemple un sous-dossier par lot.
+
+## Inventaire d'exploitation
+
+Classeur Excel de trois onglets, à reprendre dans un outil de maintenance ou de gestion de patrimoine :
+
+- **Synthèse** : taux de renseignement de chaque information, qui mesure si la maquette est exploitable ;
+- **Équipements** : repère, désignation, classe et type, niveau, local, système, fabricant, modèle, n° de série, fin de garantie, classification, GlobalId. Les équipements sont les éléments de distribution technique, hors tronçons et raccords de réseaux, et les appareils de transport ;
+- **Locaux** : numéro, désignation, niveau, surface, classification, GlobalId.
+
+Pour un export normalisé COBie, Bonsai propose le module *Facility Management* (IfcFM).
+
+## Sécurité et confidentialité
+
+- **Aucun accès réseau** : l'extension n'importe aucune bibliothèque réseau, ne lance aucun programme externe et ne demande pas la permission « network » à Blender. Un test le vérifie.
+- **Fichiers reçus traités comme non fiables** : IDS, classeurs (règles, relevé terrain ; y compris contre les bombes de décompression) et journaux de recette sont contrôlés avant lecture.
+- **Classeurs et BCF produits** : les textes venus de la maquette ne peuvent pas devenir des formules Excel, et les caractères de contrôle qui rendraient un fichier illisible sont retirés.
+- **Fichier `.blend`** : il garde les réglages du panneau et le résumé de la dernière recette, mais aucun identifiant d'élément. Le résumé est effacé à l'ouverture d'un fichier.
+- **Mention de confidentialité** : portée sur chaque page des classeurs et dans chaque sujet BCF. Elle ne remplace pas les règles de confidentialité du projet.
+
+## Limites connues
+
+- L'extension n'a pas de test automatique dans Blender : les tests couvrent le moteur, avec des doublures puis avec les vraies bibliothèques IfcOpenShell, ifctester et IfcClash, mais le panneau lui-même doit être validé dans Bonsai à chaque version.
+- La fiche de recette et les journaux sont des fichiers modifiables : la valeur probante vient du visa et des empreintes SHA-256, pas d'une signature électronique.
+- L'empreinte est celle du fichier enregistré, alors que le contrôle porte sur le modèle ouvert.
+- Seuls les points de vue BCF des conflits ont une caméra ; ailleurs l'outil de destination cadre la sélection. L'extension écrit des BCF, elle ne relit pas les réponses.
+- Le contrôle anti-ReDoS des motifs regex d'un IDS est une heuristique : n'ouvrir que des IDS de provenance connue.
+- La recette s'exécute dans le fil principal de Blender, dont l'interface reste figée pendant le calcul.
+- Dérogations : le fichier est un simple JSON ; le motif et l'auteur sont déclaratifs. Une dérogation sur un constat bloquant est possible : la fiche la rend visible, c'est au visa de la recette d'en juger.
+- Vue 3D d'un conflit : au plus 20 éléments de l'autre lot affichés à la fois, et au plus 500 conflits parcourables par anomalie.
+- Coordination : la recette porte sur la maquette ouverte, comparée aux autres lots ; les conflits entre deux lots tiers ne sont pas cherchés. Checkers signale les écarts, il ne recale pas les maquettes.
+- Conflits : le calcul géométrique peut prendre plusieurs minutes sur de grosses maquettes, l'interface restant figée ; restreindre les sélections. Les résultats bruts d'IfcClash comportent des conflits admis (gaine dans sa réservation, élément posé sur un autre…) : régler mode, tolérance et sélections plutôt que tout tester contre tout. Au-delà de 50 000 conflits, le détail est tronqué.
+- Mode *intersection* : lors des essais, une gaine traversant une poutre de part en part, affleurant sa face supérieure, n'a pas été détectée. En cas de doute, ajouter une règle en mode *collision* sur les mêmes sélections.
+- L'inventaire ne retient que la distribution technique et les appareils de transport : un équipement modélisé en objet générique n'y figure pas.
 
 ## Développement
 
-Pour le développement local sans Docker :
-
-1. Créez un environnement virtuel :
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+python -m unittest discover tests               # logique de Checkers, sans Blender ni IfcOpenShell
+python -m unittest discover tests_integration   # avec les vraies bibliothèques (pip install ifcopenshell ifctester ifcclash openpyxl)
+python build.py                                 # archive de l'extension
 ```
 
-2. Installez les dépendances :
-```bash
-pip install -r requirements.txt
+- `tests/` utilise des doublures (`tests/fakes/`) : rapide, sans dépendance, mais ne prouve pas l'accord avec les bibliothèques réelles.
+- `tests_integration/` construit une maquette avec IfcOpenShell et déroule une recette complète avec ifctester, puis confronte deux lots avec IfcClash. Ces tests sont sautés si les bibliothèques ne sont pas installées.
+- L'intégration continue (`.github/workflows/tests.yml`) lance les deux, sous Python 3.11 et 3.13, et valide les BCF contre les schémas buildingSMART.
+
+Pour valider le BCF en local, définir `BCF_XSD_DIR` (voir `tests/support.py`).
+
+```
+checkers_bonsai/
+├── blender_manifest.toml   # manifeste de l'extension (sans permission réseau)
+├── __init__.py             # enregistrement
+├── bonsai_link.py          # accès au modèle et aux objets Bonsai
+├── viewer.py               # affichage d'un conflit dans la vue 3D
+├── props.py, operators.py, ui.py
+├── examples/               # IDS et règles Excel d'exemple
+└── core/                   # moteur, indépendant de Blender
+    ├── recette.py          # orchestration et verdict
+    ├── structure.py        # contrôles de structure
+    ├── ids.py              # contrôle IDS (ifctester)
+    ├── rules.py, psets.py  # règles Excel et contrôle des PSet
+    ├── federation.py       # cohérence de référence entre lots
+    ├── clashes.py          # conflits géométriques (IfcClash)
+    ├── survey.py           # relevé terrain
+    ├── derogations.py      # fichier des dérogations
+    ├── scene.py            # coordonnées IFC vers la scène, géométrie d'un élément
+    ├── journal.py          # journal de recette et comparaison entre livraisons
+    ├── tracking.py         # tableau de suivi
+    ├── inventory.py        # inventaire d'exploitation
+    ├── spatial.py          # niveau : étage ou partie d'ouvrage
+    ├── trace.py            # empreintes et en-tête IFC
+    ├── report.py           # fiche de recette Excel
+    ├── bcf.py              # export BCF 2.1
+    ├── diagnostic.py       # vérification de l'installation
+    └── excel_safety.py     # neutralisation des formules et des caractères de contrôle
 ```
 
-3. Lancez l'application :
-```bash
-python Checkers.py
-```
+Historique des versions : [CHANGELOG.md](CHANGELOG.md).
 
-## Contribution
+## Licence et contact
 
-1. Fork le projet
-2. Créez une branche pour votre fonctionnalité (`git checkout -b feature/AmazingFeature`)
-3. Committez vos changements (`git commit -m 'Add some AmazingFeature'`)
-4. Push vers la branche (`git push origin feature/AmazingFeature`)
-5. Ouvrez une Pull Request
+Licence MIT.
 
-## Licence
-
-Ce projet est sous licence MIT. Voir le fichier `LICENSE` pour plus de détails.
-
-## Contact
-
-ZKHCHICHE - khchiche.zakaria@gmail.com
-ABOUZNIR - ali.bouznir@gmail.com 
-
-Lien du projet : [https://github.com/halhee/Checkers](https://github.com/halhee/Checkers)
+ZKHCHICHE – khchiche.zakaria@gmail.com
+ABOUZNIR – ali.bouznir@gmail.com
